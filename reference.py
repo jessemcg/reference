@@ -40,6 +40,9 @@ CONFIG_KEY_RAG_API_URL = "rag_api_url"
 CONFIG_KEY_RAG_MODEL_ID = "rag_model_id"
 CONFIG_KEY_RAG_API_KEY = "rag_api_key"
 CONFIG_KEY_RAG_PROMPT = "rag_prompt"
+CONFIG_KEY_RAG_PROMPT_NO_CITATIONS = "rag_prompt_no_citations"
+CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS = "rag_prompt_full_citations"
+CONFIG_KEY_RAG_PROMPT_STATUTES_ONLY = "rag_prompt_statutes_only"
 CONFIG_KEY_RAG_TOP_K = "rag_top_k"
 CONFIG_KEY_VOYAGE_API_KEY = "voyage_api_key"
 CONFIG_KEY_VOYAGE_MODEL = "voyage_model"
@@ -55,6 +58,18 @@ DEFAULT_RAG_PROMPT = (
     "Cite cases, statutes, and rules exactly as they appear in the context. "
     "If the context is insufficient, say so plainly."
 )
+DEFAULT_RAG_PROMPT_FULL_CITATIONS = (
+    "You are a legal research assistant. Answer the user's question using only the provided context. "
+    "Include short direct quotes of two to three words in double quotes. "
+    "Cite statutes, rules of court, and published decisions exactly as they appear in the context. "
+    "If the context is insufficient, say so plainly."
+)
+DEFAULT_RAG_PROMPT_STATUTES_ONLY = (
+    "You are a legal research assistant. Answer the user's question using only the provided context. "
+    "Include short direct quotes of two to three words in double quotes. "
+    "Cite only statutes and rules of court exactly as they appear in the context. "
+    "Do not cite cases or other authorities. If the context is insufficient, say so plainly."
+)
 DEFAULT_OUTPUT_FONT_SIZE = 12
 DEFAULT_OUTPUT_TEXT_ALPHA = 0.68
 DEFAULT_QUOTED_PHRASE_ALPHA = 1.0
@@ -66,6 +81,9 @@ RAG_OUTPUT_MIN_HEIGHT = 200
 RAG_OUTPUT_MAX_HEIGHT = 480
 RAG_OUTPUT_BG_COLOR = "alpha(@window_fg_color, 0.06)"
 SEARCH_OUTPUT_BG_COLOR = "alpha(@window_fg_color, 0.06)"
+RAG_PROMPT_NO_CITATIONS = "no_citations"
+RAG_PROMPT_FULL_CITATIONS = "full_citations"
+RAG_PROMPT_STATUTES_ONLY = "statutes_only"
 
 AI_LINK_SPAN_RE = re.compile(r'(?:\"|“)(.+?)(?:\"|”)|\*\*(.+?)\*\*', re.DOTALL)
 LINK_TRAILING_PUNCTUATION = ",.;:!?)]"
@@ -152,7 +170,9 @@ class AiSettings:
     rag_api_url: str
     rag_model_id: str
     rag_api_key: str
-    rag_prompt: str
+    rag_prompt_no_citations: str
+    rag_prompt_full_citations: str
+    rag_prompt_statutes_only: str
     rag_top_k: int
     voyage_api_key: str
     voyage_model: str
@@ -164,7 +184,7 @@ class AiSettings:
                 self.rag_api_url,
                 self.rag_model_id,
                 self.rag_api_key,
-                self.rag_prompt,
+                self.rag_prompt_no_citations,
                 self.voyage_api_key,
                 self.voyage_model,
             )
@@ -182,11 +202,22 @@ def load_ai_settings() -> AiSettings:
     except (TypeError, ValueError):
         rag_top_k = DEFAULT_RAG_TOP_K
     rag_top_k = _clamp_rag_top_k(rag_top_k)
+    legacy_prompt = str(config.get(CONFIG_KEY_RAG_PROMPT, DEFAULT_RAG_PROMPT) or DEFAULT_RAG_PROMPT).strip()
     return AiSettings(
         rag_api_url=str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip(),
         rag_model_id=str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip(),
         rag_api_key=str(config.get(CONFIG_KEY_RAG_API_KEY, "") or "").strip(),
-        rag_prompt=str(config.get(CONFIG_KEY_RAG_PROMPT, DEFAULT_RAG_PROMPT) or DEFAULT_RAG_PROMPT).strip(),
+        rag_prompt_no_citations=str(
+            config.get(CONFIG_KEY_RAG_PROMPT_NO_CITATIONS, legacy_prompt) or legacy_prompt
+        ).strip(),
+        rag_prompt_full_citations=str(
+            config.get(CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS, DEFAULT_RAG_PROMPT_FULL_CITATIONS)
+            or DEFAULT_RAG_PROMPT_FULL_CITATIONS
+        ).strip(),
+        rag_prompt_statutes_only=str(
+            config.get(CONFIG_KEY_RAG_PROMPT_STATUTES_ONLY, DEFAULT_RAG_PROMPT_STATUTES_ONLY)
+            or DEFAULT_RAG_PROMPT_STATUTES_ONLY
+        ).strip(),
         rag_top_k=rag_top_k,
         voyage_api_key=str(config.get(CONFIG_KEY_VOYAGE_API_KEY, "") or "").strip(),
         voyage_model=str(config.get(CONFIG_KEY_VOYAGE_MODEL, "voyage-law-2") or "voyage-law-2").strip(),
@@ -198,7 +229,14 @@ def save_ai_settings(settings: AiSettings) -> None:
     config[CONFIG_KEY_RAG_API_URL] = settings.rag_api_url
     config[CONFIG_KEY_RAG_MODEL_ID] = settings.rag_model_id
     config[CONFIG_KEY_RAG_API_KEY] = settings.rag_api_key
-    config[CONFIG_KEY_RAG_PROMPT] = settings.rag_prompt or DEFAULT_RAG_PROMPT
+    config[CONFIG_KEY_RAG_PROMPT_NO_CITATIONS] = settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
+    config[CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS] = (
+        settings.rag_prompt_full_citations or DEFAULT_RAG_PROMPT_FULL_CITATIONS
+    )
+    config[CONFIG_KEY_RAG_PROMPT_STATUTES_ONLY] = (
+        settings.rag_prompt_statutes_only or DEFAULT_RAG_PROMPT_STATUTES_ONLY
+    )
+    config[CONFIG_KEY_RAG_PROMPT] = settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
     config[CONFIG_KEY_RAG_TOP_K] = _clamp_rag_top_k(int(settings.rag_top_k))
     config[CONFIG_KEY_VOYAGE_API_KEY] = settings.voyage_api_key
     config[CONFIG_KEY_VOYAGE_MODEL] = settings.voyage_model or "voyage-law-2"
@@ -408,7 +446,9 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._status_label: Gtk.Label | None = None
         self._rag_entry: Gtk.Entry | None = None
         self._search_entry: Gtk.SearchEntry | None = None
-        self._rag_button: Gtk.Button | None = None
+        self._rag_no_citations_button: Gtk.Button | None = None
+        self._rag_full_citations_button: Gtk.Button | None = None
+        self._rag_statutes_only_button: Gtk.Button | None = None
         self._search_button: Gtk.Button | None = None
         self._search_prev_button: Gtk.Button | None = None
         self._search_next_button: Gtk.Button | None = None
@@ -456,13 +496,31 @@ class ReferenceWindow(Adw.ApplicationWindow):
         controls.append(rag_entry)
         self._rag_entry = rag_entry
 
-        rag_button = Gtk.Button(label="Ask")
-        rag_button.add_css_class("suggested-action")
-        rag_button.add_css_class("flat")
-        rag_button.add_css_class("no-bold")
-        rag_button.connect("clicked", self._on_rag_question_clicked)
-        controls.append(rag_button)
-        self._rag_button = rag_button
+        rag_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        no_citations_button = Gtk.Button(label="No Citations")
+        no_citations_button.add_css_class("suggested-action")
+        no_citations_button.add_css_class("flat")
+        no_citations_button.add_css_class("no-bold")
+        no_citations_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_NO_CITATIONS)
+        rag_buttons.append(no_citations_button)
+        self._rag_no_citations_button = no_citations_button
+
+        full_citations_button = Gtk.Button(label="Full Citations")
+        full_citations_button.add_css_class("flat")
+        full_citations_button.add_css_class("no-bold")
+        full_citations_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_FULL_CITATIONS)
+        rag_buttons.append(full_citations_button)
+        self._rag_full_citations_button = full_citations_button
+
+        statutes_only_button = Gtk.Button(label="Statutes/Rules Only")
+        statutes_only_button.add_css_class("flat")
+        statutes_only_button.add_css_class("no-bold")
+        statutes_only_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_STATUTES_ONLY)
+        rag_buttons.append(statutes_only_button)
+        self._rag_statutes_only_button = statutes_only_button
+
+        controls.append(rag_buttons)
 
         outer.append(controls)
 
@@ -662,17 +720,28 @@ class ReferenceWindow(Adw.ApplicationWindow):
         question = entry.get_text().strip()
         if question:
             entry.set_text("")
-        self._ask_rag_question(question)
+        self._ask_rag_question(question, RAG_PROMPT_NO_CITATIONS)
 
-    def _on_rag_question_clicked(self, _button: Gtk.Button) -> None:
+    def _on_rag_question_clicked(self, _button: Gtk.Button, prompt_kind: str) -> None:
         if not self._rag_entry:
             return
         question = self._rag_entry.get_text().strip()
         if question:
             self._rag_entry.set_text("")
-        self._ask_rag_question(question)
+        self._ask_rag_question(question, prompt_kind)
 
-    def _ask_rag_question(self, question: str) -> None:
+    def _resolve_rag_prompt(self, prompt_kind: str) -> str:
+        settings = self._ai_settings
+        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
+            prompt = settings.rag_prompt_full_citations
+            return prompt or DEFAULT_RAG_PROMPT_FULL_CITATIONS
+        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
+            prompt = settings.rag_prompt_statutes_only
+            return prompt or DEFAULT_RAG_PROMPT_STATUTES_ONLY
+        prompt = settings.rag_prompt_no_citations
+        return prompt or DEFAULT_RAG_PROMPT
+
+    def _ask_rag_question(self, question: str, prompt_kind: str) -> None:
         if not question:
             return
         if not self._ai_settings.is_rag_ready():
@@ -689,9 +758,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._apply_ai_output_links("", self._rag_output_state)
         cancel_event = threading.Event()
         self._rag_cancel_event = cancel_event
+        prompt_text = self._resolve_rag_prompt(prompt_kind)
         thread = threading.Thread(
             target=self._rag_worker,
-            args=(question, self._ai_settings, cancel_event, generation),
+            args=(question, prompt_text, self._ai_settings, cancel_event, generation),
             daemon=True,
         )
         self._rag_stream_thread = thread
@@ -700,12 +770,13 @@ class ReferenceWindow(Adw.ApplicationWindow):
     def _rag_worker(
         self,
         question: str,
+        prompt_text: str,
         settings: AiSettings,
         cancel_event: threading.Event | None,
         generation: int,
     ) -> None:
         try:
-            messages = self._build_rag_messages(question, settings)
+            messages = self._build_rag_messages(question, settings, prompt_text)
             if not messages:
                 GLib.idle_add(self._set_rag_answer, "No relevant context found in the briefing files.")
                 GLib.idle_add(self._on_rag_stream_finished, generation)
@@ -773,7 +844,12 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._set_status("")
         return False
 
-    def _build_rag_messages(self, question: str, settings: AiSettings) -> list[dict[str, str]] | None:
+    def _build_rag_messages(
+        self,
+        question: str,
+        settings: AiSettings,
+        prompt_text: str,
+    ) -> list[dict[str, str]] | None:
         vectorstore, error = self._ensure_rag_vectorstore_ready(settings)
         if error or vectorstore is None:
             raise RuntimeError(error or "RAG data unavailable.")
@@ -786,7 +862,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             context_blocks.append(f"{title}\n{doc.page_content}")
         context = "\n\n---\n\n".join(context_blocks)
 
-        prompt = settings.rag_prompt or DEFAULT_RAG_PROMPT
+        prompt = prompt_text or DEFAULT_RAG_PROMPT
         if "{context}" in prompt or "{question}" in prompt:
             system_prompt = prompt.format(context=context, question=question)
             messages = [{"role": "system", "content": system_prompt}]
@@ -1695,14 +1771,15 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._search_font_size_row: Adw.EntryRow | None = None
         self._search_highlight_color_row: Adw.EntryRow | None = None
         self._output_text_alpha_row: Adw.EntryRow | None = None
-        self._prompt_buffer: Gtk.TextBuffer | None = None
+        self._prompt_buffers: dict[str, Gtk.TextBuffer] = {}
         self._status_label: Gtk.Label | None = None
         self._build_ui()
         self._load_settings()
-        self.connect("destroy", self._on_destroy)
+        self.connect("close-request", self._on_close_request)
 
-    def _on_destroy(self, _window: Gtk.Window) -> None:
+    def _on_close_request(self, _window: Gtk.Window) -> bool:
         self._app._settings_window = None
+        return False
 
     def _build_ui(self) -> None:
         view = Adw.ToolbarView()
@@ -1785,16 +1862,24 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         voyage_group.add(voyage_key)
         self._voyage_key_row = voyage_key
 
-        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        prompt_section.set_hexpand(True)
-        prompt_section.set_vexpand(True)
-        prompt_label = Gtk.Label(label="RAG Prompt", xalign=0)
-        prompt_label.add_css_class("dim-label")
-        prompt_section.append(prompt_label)
-        prompt_scroller, buffer = self._build_prompt_editor(DEFAULT_RAG_PROMPT)
-        prompt_section.append(prompt_scroller)
-        box.append(prompt_section)
-        self._prompt_buffer = buffer
+        self._add_prompt_section(
+            box,
+            "No Citations Prompt",
+            DEFAULT_RAG_PROMPT,
+            RAG_PROMPT_NO_CITATIONS,
+        )
+        self._add_prompt_section(
+            box,
+            "Full Citations Prompt",
+            DEFAULT_RAG_PROMPT_FULL_CITATIONS,
+            RAG_PROMPT_FULL_CITATIONS,
+        )
+        self._add_prompt_section(
+            box,
+            "Statutes/Rules Only Prompt",
+            DEFAULT_RAG_PROMPT_STATUTES_ONLY,
+            RAG_PROMPT_STATUTES_ONLY,
+        )
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1846,6 +1931,18 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             row.set_hexpand(True)
         return row
 
+    def _add_prompt_section(self, box: Gtk.Box, title: str, text: str, key: str) -> None:
+        prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        prompt_section.set_hexpand(True)
+        prompt_section.set_vexpand(True)
+        prompt_label = Gtk.Label(label=title, xalign=0)
+        prompt_label.add_css_class("dim-label")
+        prompt_section.append(prompt_label)
+        prompt_scroller, buffer = self._build_prompt_editor(text)
+        prompt_section.append(prompt_scroller)
+        box.append(prompt_section)
+        self._prompt_buffers[key] = buffer
+
     def _build_prompt_editor(self, text: str) -> tuple[Gtk.ScrolledWindow, Gtk.TextBuffer]:
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -1867,11 +1964,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         scroller.set_child(prompt_view)
         return scroller, buffer
 
-    def _prompt_text(self) -> str:
-        if not self._prompt_buffer:
-            return DEFAULT_RAG_PROMPT
-        start, end = self._prompt_buffer.get_bounds()
-        return self._prompt_buffer.get_text(start, end, True)
+    def _prompt_text(self, key: str, fallback: str) -> str:
+        buffer = self._prompt_buffers.get(key)
+        if not buffer:
+            return fallback
+        start, end = buffer.get_bounds()
+        return buffer.get_text(start, end, True)
 
     def _load_settings(self) -> None:
         settings = load_ai_settings()
@@ -1887,8 +1985,18 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             self._voyage_model_row.set_text(settings.voyage_model)
         if self._voyage_key_row:
             self._voyage_key_row.set_text(settings.voyage_api_key)
-        if self._prompt_buffer:
-            self._prompt_buffer.set_text(settings.rag_prompt or DEFAULT_RAG_PROMPT)
+        if RAG_PROMPT_NO_CITATIONS in self._prompt_buffers:
+            self._prompt_buffers[RAG_PROMPT_NO_CITATIONS].set_text(
+                settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
+            )
+        if RAG_PROMPT_FULL_CITATIONS in self._prompt_buffers:
+            self._prompt_buffers[RAG_PROMPT_FULL_CITATIONS].set_text(
+                settings.rag_prompt_full_citations or DEFAULT_RAG_PROMPT_FULL_CITATIONS
+            )
+        if RAG_PROMPT_STATUTES_ONLY in self._prompt_buffers:
+            self._prompt_buffers[RAG_PROMPT_STATUTES_ONLY].set_text(
+                settings.rag_prompt_statutes_only or DEFAULT_RAG_PROMPT_STATUTES_ONLY
+            )
         rag_size, rag_highlight, search_size, search_highlight, output_alpha = load_ui_settings()
         if self._font_size_row:
             self._font_size_row.set_text(str(rag_size))
@@ -1916,7 +2024,21 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             rag_api_url=self._rag_api_url_row.get_text().strip(),
             rag_model_id=self._rag_model_row.get_text().strip(),
             rag_api_key=self._rag_api_key_row.get_text().strip(),
-            rag_prompt=self._prompt_text().strip() or DEFAULT_RAG_PROMPT,
+            rag_prompt_no_citations=self._prompt_text(
+                RAG_PROMPT_NO_CITATIONS,
+                DEFAULT_RAG_PROMPT,
+            ).strip()
+            or DEFAULT_RAG_PROMPT,
+            rag_prompt_full_citations=self._prompt_text(
+                RAG_PROMPT_FULL_CITATIONS,
+                DEFAULT_RAG_PROMPT_FULL_CITATIONS,
+            ).strip()
+            or DEFAULT_RAG_PROMPT_FULL_CITATIONS,
+            rag_prompt_statutes_only=self._prompt_text(
+                RAG_PROMPT_STATUTES_ONLY,
+                DEFAULT_RAG_PROMPT_STATUTES_ONLY,
+            ).strip()
+            or DEFAULT_RAG_PROMPT_STATUTES_ONLY,
             rag_top_k=DEFAULT_RAG_TOP_K,
             voyage_api_key=self._voyage_key_row.get_text().strip(),
             voyage_model=self._voyage_model_row.get_text().strip() or "voyage-law-2",
