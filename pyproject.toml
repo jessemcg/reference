@@ -1,0 +1,15 @@
+[project]
+name = "Reference"
+version = "0.1.0"
+description = "Use your prior briefing to ask legal questions and obtain search results that can be pasted into Libreoffice writer."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb>=1.4.0",
+    "langchain-chroma>=1.1.0",
+    "langchain-text-splitters>=1.1.0",
+    "langchain-voyageai>=0.3.0",
+    "odfpy>=1.4.1",
+    "pygobject>=3.54.5",
+    "pypandoc>=1.16.2",
+]
