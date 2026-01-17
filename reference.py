@@ -492,6 +492,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
         rag_entry = Gtk.Entry()
         rag_entry.set_hexpand(True)
+        rag_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY, "dialog-question-symbolic")
+        rag_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.PRIMARY, "Ask a RAG question")
         rag_entry.connect("activate", self._on_rag_question_activate)
         controls.append(rag_entry)
         self._rag_entry = rag_entry
