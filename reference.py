@@ -47,10 +47,7 @@ CONFIG_KEY_RAG_TOP_K = "rag_top_k"
 CONFIG_KEY_VOYAGE_API_KEY = "voyage_api_key"
 CONFIG_KEY_VOYAGE_MODEL = "voyage_model"
 CONFIG_KEY_RAG_OUTPUT_FONT_SIZE = "rag_output_font_size"
-CONFIG_KEY_RAG_HIGHLIGHT_COLOR = "rag_highlight_color"
 CONFIG_KEY_SEARCH_OUTPUT_FONT_SIZE = "search_output_font_size"
-CONFIG_KEY_SEARCH_HIGHLIGHT_COLOR = "search_highlight_color"
-CONFIG_KEY_OUTPUT_TEXT_ALPHA = "output_text_alpha"
 
 DEFAULT_RAG_PROMPT = (
     "You are a legal research assistant. Answer the user's question using only the provided context. "
@@ -71,10 +68,9 @@ DEFAULT_RAG_PROMPT_STATUTES_ONLY = (
     "Do not cite cases or other authorities. If the context is insufficient, say so plainly."
 )
 DEFAULT_OUTPUT_FONT_SIZE = 12
-DEFAULT_OUTPUT_TEXT_ALPHA = 0.68
+DEFAULT_TEXT_COLOR = "alpha(@window_fg_color, 0.68)"
 DEFAULT_QUOTED_PHRASE_ALPHA = 1.0
-DEFAULT_RAG_HIGHLIGHT_COLOR = ""
-DEFAULT_SEARCH_HIGHLIGHT_COLOR = "#2b5fb8"
+DEFAULT_SEARCH_HIGHLIGHT_COLOR = "#ffff00"
 DEFAULT_RAG_LINE_HEIGHT = 1.2
 DEFAULT_RAG_TOP_K = 6
 RAG_OUTPUT_MIN_HEIGHT = 200
@@ -249,35 +245,11 @@ def save_ai_settings(settings: AiSettings) -> None:
     _write_config(config)
 
 
-def _normalize_rag_highlight_color(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        return ""
-    if re.fullmatch(r"#([0-9a-fA-F]{6})", cleaned):
-        return cleaned.lower()
-    return ""
-
-
-def _normalize_search_highlight_color(value: str) -> str:
-    cleaned = value.strip()
-    if re.fullmatch(r"#([0-9a-fA-F]{6})", cleaned):
-        return cleaned.lower()
-    return DEFAULT_SEARCH_HIGHLIGHT_COLOR
-
-
 def _clamp_font_size(value: int) -> int:
     if value < 8:
         return 8
     if value > 32:
         return 32
-    return value
-
-
-def _clamp_alpha(value: float) -> float:
-    if value < 0.1:
-        return 0.1
-    if value > 1.0:
-        return 1.0
     return value
 
 
@@ -289,7 +261,7 @@ def _clamp_rag_top_k(value: int) -> int:
     return value
 
 
-def load_ui_settings() -> tuple[int, str, int, str, float]:
+def load_ui_settings() -> tuple[int, int]:
     config = _read_config()
     raw_rag_size = config.get(CONFIG_KEY_RAG_OUTPUT_FONT_SIZE, DEFAULT_OUTPUT_FONT_SIZE)
     try:
@@ -297,40 +269,22 @@ def load_ui_settings() -> tuple[int, str, int, str, float]:
     except (TypeError, ValueError):
         rag_size = DEFAULT_OUTPUT_FONT_SIZE
     rag_size = _clamp_font_size(rag_size)
-    rag_highlight = _normalize_rag_highlight_color(
-        str(config.get(CONFIG_KEY_RAG_HIGHLIGHT_COLOR, DEFAULT_RAG_HIGHLIGHT_COLOR) or DEFAULT_RAG_HIGHLIGHT_COLOR)
-    )
     raw_search_size = config.get(CONFIG_KEY_SEARCH_OUTPUT_FONT_SIZE, DEFAULT_OUTPUT_FONT_SIZE)
     try:
         search_size = int(raw_search_size)
     except (TypeError, ValueError):
         search_size = DEFAULT_OUTPUT_FONT_SIZE
     search_size = _clamp_font_size(search_size)
-    search_highlight = _normalize_search_highlight_color(
-        str(config.get(CONFIG_KEY_SEARCH_HIGHLIGHT_COLOR, DEFAULT_SEARCH_HIGHLIGHT_COLOR) or DEFAULT_SEARCH_HIGHLIGHT_COLOR)
-    )
-    raw_alpha = config.get(CONFIG_KEY_OUTPUT_TEXT_ALPHA, DEFAULT_OUTPUT_TEXT_ALPHA)
-    try:
-        output_alpha = float(raw_alpha)
-    except (TypeError, ValueError):
-        output_alpha = DEFAULT_OUTPUT_TEXT_ALPHA
-    output_alpha = _clamp_alpha(output_alpha)
-    return rag_size, rag_highlight, search_size, search_highlight, output_alpha
+    return rag_size, search_size
 
 
 def save_ui_settings(
     rag_font_size: int,
-    rag_highlight_color: str,
     search_font_size: int,
-    search_highlight_color: str,
-    output_text_alpha: float,
 ) -> None:
     config = _read_config()
     config[CONFIG_KEY_RAG_OUTPUT_FONT_SIZE] = int(rag_font_size)
-    config[CONFIG_KEY_RAG_HIGHLIGHT_COLOR] = _normalize_rag_highlight_color(rag_highlight_color)
     config[CONFIG_KEY_SEARCH_OUTPUT_FONT_SIZE] = int(search_font_size)
-    config[CONFIG_KEY_SEARCH_HIGHLIGHT_COLOR] = _normalize_search_highlight_color(search_highlight_color)
-    config[CONFIG_KEY_OUTPUT_TEXT_ALPHA] = _clamp_alpha(float(output_text_alpha))
     _write_config(config)
 
 
@@ -428,10 +382,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._ai_settings = load_ai_settings()
         (
             self._rag_output_font_size,
-            self._rag_highlight_color,
             self._search_output_font_size,
-            self._search_highlight_color,
-            self._output_text_alpha,
         ) = load_ui_settings()
         self._rag_output_state = AiOutputView()
         self._search_output_state = AiOutputView()
@@ -1203,10 +1154,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if tag is None:
             tag = buffer.create_tag(
                 "search-highlight",
-                foreground=self._search_highlight_color,
+                background=DEFAULT_SEARCH_HIGHLIGHT_COLOR,
             )
         else:
-            tag.set_property("foreground", self._search_highlight_color)
+            tag.set_property("background", DEFAULT_SEARCH_HIGHLIGHT_COLOR)
+            tag.set_property("foreground-set", False)
         start, end = buffer.get_bounds()
         buffer.remove_tag(tag, start, end)
         first_match: int | None = None
@@ -1434,11 +1386,14 @@ class ReferenceWindow(Adw.ApplicationWindow):
         fallback.parse("#ffffff")
         if not view:
             return fallback
-        context = view.get_style_context()
-        try:
-            base = context.get_color()
-        except TypeError:
-            base = context.get_color(Gtk.StateFlags.NORMAL)
+        if hasattr(view, "get_color"):
+            base = view.get_color()
+        else:
+            context = view.get_style_context()
+            try:
+                base = context.get_color()
+            except TypeError:
+                base = context.get_color(Gtk.StateFlags.NORMAL)
         quote = Gdk.RGBA()
         quote.red = base.red
         quote.green = base.green
@@ -1471,26 +1426,17 @@ class ReferenceWindow(Adw.ApplicationWindow):
         rendered_text, spans = self._extract_ai_link_spans(text)
         buffer.set_text(rendered_text)
 
-        quote_color = None
-        if not self._rag_highlight_color:
-            quote_color = self._resolve_rag_quote_color(view)
+        quote_color = self._resolve_rag_quote_color(view)
         for start, end, phrase in spans:
             if end <= start:
                 continue
             start_iter = buffer.get_iter_at_offset(start)
             end_iter = buffer.get_iter_at_offset(end)
-            if self._rag_highlight_color:
-                tag = buffer.create_tag(
-                    None,
-                    foreground=self._rag_highlight_color,
-                    underline=Pango.Underline.NONE,
-                )
-            else:
-                tag = buffer.create_tag(
-                    None,
-                    foreground_rgba=quote_color,
-                    underline=Pango.Underline.NONE,
-                )
+            tag = buffer.create_tag(
+                None,
+                foreground_rgba=quote_color,
+                underline=Pango.Underline.NONE,
+            )
             link_lookup[tag] = phrase
             buffer.apply_tag(tag, start_iter, end_iter)
             link_tags.append(tag)
@@ -1518,14 +1464,13 @@ class ReferenceWindow(Adw.ApplicationWindow):
                     self._css_provider,
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
                 )
-        text_color = f"alpha(@window_fg_color, {self._output_text_alpha:.2f})"
         css = (
             "textview.rag-output, textview.search-output {"
             " }"
             ".app-title { font-weight: 700; }"
             "button.no-bold { font-weight: normal; }"
             "textview.rag-output { "
-            f"color: {text_color};"
+            f"color: {DEFAULT_TEXT_COLOR};"
             "background: transparent;"
             "}"
             "textview.search-output { "
@@ -1588,20 +1533,14 @@ class ReferenceWindow(Adw.ApplicationWindow):
     def apply_saved_ui_settings(
         self,
         rag_size: int,
-        rag_highlight: str,
         search_size: int,
-        search_highlight: str,
-        output_text_alpha: float,
     ) -> bool:
         size_changed = (
             rag_size != self._rag_output_font_size
             or search_size != self._search_output_font_size
         )
         self._rag_output_font_size = rag_size
-        self._rag_highlight_color = rag_highlight
         self._search_output_font_size = search_size
-        self._search_highlight_color = search_highlight
-        self._output_text_alpha = output_text_alpha
         if size_changed:
             self._refresh_output_colors()
             self._show_toast("Font size saved. Restart Reference to apply.")
@@ -1641,10 +1580,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if not state.link_tags:
             return
         for tag in state.link_tags:
-            if self._rag_highlight_color:
-                tag.set_property("foreground", self._rag_highlight_color)
-            else:
-                tag.set_property("foreground-rgba", self._resolve_rag_quote_color(state.view))
+            tag.set_property("foreground-rgba", self._resolve_rag_quote_color(state.view))
 
     def _update_search_highlight_color(self, state: AiOutputView) -> None:
         buffer = state.buffer
@@ -1653,7 +1589,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
         table = buffer.get_tag_table()
         tag = table.lookup("search-highlight") if table else None
         if tag is not None:
-            tag.set_property("foreground", self._search_highlight_color)
+            tag.set_property("background", DEFAULT_SEARCH_HIGHLIGHT_COLOR)
+            tag.set_property("foreground-set", False)
 
     def _apply_ai_output_links(self, text: str, state: AiOutputView) -> None:
         self._apply_link_spans(
@@ -1794,10 +1731,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._voyage_model_row: Adw.EntryRow | None = None
         self._voyage_key_row: Adw.EntryRow | None = None
         self._font_size_row: Adw.EntryRow | None = None
-        self._highlight_color_row: Adw.EntryRow | None = None
         self._search_font_size_row: Adw.EntryRow | None = None
-        self._search_highlight_color_row: Adw.EntryRow | None = None
-        self._output_text_alpha_row: Adw.EntryRow | None = None
         self._prompt_buffers: dict[str, Gtk.TextBuffer] = {}
         self._status_label: Gtk.Label | None = None
         self._build_ui()
@@ -1831,25 +1765,10 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         display_group.add(font_size_row)
         self._font_size_row = font_size_row
 
-        highlight_row = Adw.EntryRow(title="RAG Quote Color (#RRGGBB, blank = auto)")
-        highlight_row.set_hexpand(True)
-        display_group.add(highlight_row)
-        self._highlight_color_row = highlight_row
-
         search_font_size_row = Adw.EntryRow(title="Search Output Font Size (pt)")
         search_font_size_row.set_hexpand(True)
         display_group.add(search_font_size_row)
         self._search_font_size_row = search_font_size_row
-
-        output_alpha_row = Adw.EntryRow(title="Output Text Alpha (0.1-1.0)")
-        output_alpha_row.set_hexpand(True)
-        display_group.add(output_alpha_row)
-        self._output_text_alpha_row = output_alpha_row
-
-        search_highlight_row = Adw.EntryRow(title="Search Highlight Color (#RRGGBB)")
-        search_highlight_row.set_hexpand(True)
-        display_group.add(search_highlight_row)
-        self._search_highlight_color_row = search_highlight_row
 
         rag_group = Adw.PreferencesGroup(title="RAG LLM (OpenAI Compatible)")
         rag_group.add_css_class("list-stack")
@@ -2024,17 +1943,11 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             self._prompt_buffers[RAG_PROMPT_STATUTES_ONLY].set_text(
                 settings.rag_prompt_statutes_only or DEFAULT_RAG_PROMPT_STATUTES_ONLY
             )
-        rag_size, rag_highlight, search_size, search_highlight, output_alpha = load_ui_settings()
+        rag_size, search_size = load_ui_settings()
         if self._font_size_row:
             self._font_size_row.set_text(str(rag_size))
-        if self._highlight_color_row:
-            self._highlight_color_row.set_text(rag_highlight)
         if self._search_font_size_row:
             self._search_font_size_row.set_text(str(search_size))
-        if self._search_highlight_color_row:
-            self._search_highlight_color_row.set_text(search_highlight)
-        if self._output_text_alpha_row:
-            self._output_text_alpha_row.set_text(f"{output_alpha:.2f}")
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if not all(
@@ -2080,39 +1993,23 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._parent._ai_settings = settings
         self._parent._kickoff_rag_background_load()
         rag_size = DEFAULT_OUTPUT_FONT_SIZE
-        rag_highlight = DEFAULT_RAG_HIGHLIGHT_COLOR
         search_size = DEFAULT_OUTPUT_FONT_SIZE
-        search_highlight = DEFAULT_SEARCH_HIGHLIGHT_COLOR
-        output_text_alpha = DEFAULT_OUTPUT_TEXT_ALPHA
         if self._font_size_row:
             raw_size = self._font_size_row.get_text().strip()
             try:
                 rag_size = _clamp_font_size(int(raw_size))
             except (TypeError, ValueError):
                 rag_size = DEFAULT_OUTPUT_FONT_SIZE
-        if self._highlight_color_row:
-            rag_highlight = _normalize_rag_highlight_color(self._highlight_color_row.get_text())
         if self._search_font_size_row:
             raw_size = self._search_font_size_row.get_text().strip()
             try:
                 search_size = _clamp_font_size(int(raw_size))
             except (TypeError, ValueError):
                 search_size = DEFAULT_OUTPUT_FONT_SIZE
-        if self._search_highlight_color_row:
-            search_highlight = _normalize_search_highlight_color(self._search_highlight_color_row.get_text())
-        if self._output_text_alpha_row:
-            raw_alpha = self._output_text_alpha_row.get_text().strip()
-            try:
-                output_text_alpha = _clamp_alpha(float(raw_alpha))
-            except (TypeError, ValueError):
-                output_text_alpha = DEFAULT_OUTPUT_TEXT_ALPHA
-        save_ui_settings(rag_size, rag_highlight, search_size, search_highlight, output_text_alpha)
+        save_ui_settings(rag_size, search_size)
         size_changed = self._parent.apply_saved_ui_settings(
             rag_size,
-            rag_highlight,
             search_size,
-            search_highlight,
-            output_text_alpha,
         )
         if self._status_label:
             if size_changed:
