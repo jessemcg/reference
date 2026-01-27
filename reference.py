@@ -81,6 +81,12 @@ RAG_OUTPUT_MIN_HEIGHT = 200
 RAG_OUTPUT_MAX_HEIGHT = 480
 RAG_OUTPUT_BG_COLOR = "alpha(@window_fg_color, 0.06)"
 SEARCH_OUTPUT_BG_COLOR = "alpha(@window_fg_color, 0.06)"
+BRIEF_TEXT_BG_COLOR = "#ffffff"
+BRIEF_TEXT_FG_COLOR = "#000000"
+BRIEF_TEXT_FONT_FAMILY = (
+    '"Century Schoolbook", "TeX Gyre Schola", "New Century Schoolbook", '
+    '"Century Schoolbook L", "URW Schoolbook L", serif'
+)
 RAG_PROMPT_NO_CITATIONS = "no_citations"
 RAG_PROMPT_FULL_CITATIONS = "full_citations"
 RAG_PROMPT_STATUTES_ONLY = "statutes_only"
@@ -1249,7 +1255,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
         window.set_default_size(900, 700)
 
         view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
-        view.set_monospace(True)
+        view.add_css_class("brief-output")
+        view.set_monospace(False)
         view.set_left_margin(12)
         view.set_right_margin(12)
         view.set_top_margin(12)
@@ -1258,6 +1265,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         buffer.set_text(text)
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.add_css_class("brief-output-frame")
         scroller.set_child(view)
 
         window.set_content(scroller)
@@ -1521,8 +1529,22 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "background: transparent;"
             "}"
             "textview.search-output { "
-            f"color: {text_color};"
-            "background: transparent;"
+            f"color: {BRIEF_TEXT_FG_COLOR};"
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
+            f"font-family: {BRIEF_TEXT_FONT_FAMILY};"
+            "}"
+            "textview.search-output text { "
+            f"color: {BRIEF_TEXT_FG_COLOR};"
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
+            "}"
+            "textview.brief-output { "
+            f"color: {BRIEF_TEXT_FG_COLOR};"
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
+            f"font-family: {BRIEF_TEXT_FONT_FAMILY};"
+            "}"
+            "textview.brief-output text { "
+            f"color: {BRIEF_TEXT_FG_COLOR};"
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
             "}"
             ".rag-output-frame { "
             f"background-color: {RAG_OUTPUT_BG_COLOR};"
@@ -1533,12 +1555,12 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "background: transparent;"
             "}"
             ".search-output-frame { "
-            f"background-color: {SEARCH_OUTPUT_BG_COLOR};"
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
             "border-radius: 16px;"
             "padding: 5px;"
             "}"
             ".search-output-frame > scrolledwindow, .search-output-frame > scrolledwindow > viewport { "
-            "background: transparent;"
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
             "}"
             ".search-output-frame scrolledwindow undershoot { "
             "background: transparent;"
@@ -1547,6 +1569,9 @@ class ReferenceWindow(Adw.ApplicationWindow):
             ".search-output-frame scrolledwindow overshoot { "
             "background: transparent;"
             "box-shadow: none;"
+            "}"
+            ".brief-output-frame, .brief-output-frame > viewport { "
+            f"background-color: {BRIEF_TEXT_BG_COLOR};"
             "}"
             f"textview.rag-output {{ font-size: {self._rag_output_font_size}pt; line-height: {DEFAULT_RAG_LINE_HEIGHT}; }}"
             f"textview.search-output {{ font-size: {self._search_output_font_size}pt; }}"
