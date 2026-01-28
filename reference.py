@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -18,11 +19,6 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # type: ignore
-
-try:
-    import pypandoc  # type: ignore
-except Exception:  # noqa: BLE001
-    pypandoc = None  # type: ignore[assignment]
 
 APP_ID = "com.mcglaw.Reference"
 APP_NAME = "Reference"
@@ -411,6 +407,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._search_next_button: Gtk.Button | None = None
         self._search_nav_label: Gtk.Label | None = None
         self._search_title_label: Gtk.Label | None = None
+        self._search_download_button: Gtk.Button | None = None
         self._search_results: list[SearchResult] = []
         self._search_result_index = 0
         self._search_terms: list[str] = []
@@ -542,14 +539,28 @@ class ReferenceWindow(Adw.ApplicationWindow):
         search_nav.append(nav_label)
         self._search_nav_label = nav_label
 
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title_box.set_hexpand(True)
+        title_box.set_halign(Gtk.Align.END)
+        title_box.set_valign(Gtk.Align.CENTER)
+
         title_label = Gtk.Label(label="", xalign=0)
         title_label.add_css_class("dim-label")
         title_label.set_wrap(True)
-        title_label.set_hexpand(True)
         title_label.set_halign(Gtk.Align.END)
         title_label.set_xalign(1.0)
-        search_nav.append(title_label)
+        title_box.append(title_label)
         self._search_title_label = title_label
+
+        download_button = Gtk.Button(label="Download")
+        download_button.add_css_class("flat")
+        download_button.add_css_class("no-bold")
+        download_button.set_visible(False)
+        download_button.connect("clicked", self._on_search_download_clicked)
+        title_box.append(download_button)
+        self._search_download_button = download_button
+
+        search_nav.append(title_box)
 
         outer.append(search_nav)
 
@@ -1126,6 +1137,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             state.buffer.set_text("No matches found.")
             if self._search_title_label:
                 self._search_title_label.set_text("")
+            self._update_search_download_button_state()
             return
         if index < 0 or index >= len(self._search_results):
             return
@@ -1135,10 +1147,12 @@ class ReferenceWindow(Adw.ApplicationWindow):
             state.buffer.set_text("Brief not found in the index.")
             if self._search_title_label:
                 self._search_title_label.set_text(result.title)
+            self._update_search_download_button_state()
             return
         state.buffer.set_text(text)
         if self._search_title_label:
             self._search_title_label.set_text(result.title)
+        self._update_search_download_button_state()
         first_match = self._highlight_search_terms(state.buffer, text, self._search_terms)
         if first_match is not None:
             GLib.idle_add(self._scroll_search_view_to_offset, state.view, state.buffer, first_match)
@@ -1196,6 +1210,71 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._search_result_index = (self._search_result_index + 1) % len(self._search_results)
         self._update_search_nav()
         self._show_search_result_at_index(self._search_result_index)
+
+    def _on_search_download_clicked(self, _button: Gtk.Button) -> None:
+        if not self._search_results:
+            self._show_toast("No search results to download.")
+            return
+        result = self._search_results[self._search_result_index]
+        odt_path = Path(result.path)
+        if not odt_path.exists():
+            self._show_toast("Brief file not found on disk.")
+            return
+        dialog = Gtk.FileDialog(title="Save ODT")
+        dialog.set_initial_name(odt_path.name)
+        dialog.save(self, None, self._on_search_download_save_ready, odt_path)
+
+    def _on_search_download_save_ready(
+        self,
+        dialog: Gtk.FileDialog,
+        result: Gio.AsyncResult,
+        odt_path: Path,
+    ) -> None:
+        try:
+            dest_file = dialog.save_finish(result)
+        except GLib.Error:
+            return
+        if dest_file is None:
+            return
+        dest_path_raw = dest_file.get_path()
+        if not dest_path_raw:
+            self._show_toast("Please choose a local file destination.")
+            return
+        dest_path = Path(dest_path_raw)
+        self._download_odt_in_background(odt_path, dest_path)
+
+    def _download_odt_in_background(self, odt_path: Path, dest_path: Path) -> None:
+        self._set_status("Saving ODT…")
+        if self._search_download_button:
+            self._search_download_button.set_sensitive(False)
+        thread = threading.Thread(
+            target=self._download_odt_worker,
+            args=(odt_path, dest_path),
+            daemon=True,
+        )
+        thread.start()
+
+    def _download_odt_worker(self, odt_path: Path, dest_path: Path) -> None:
+        try:
+            self._copy_odt(odt_path, dest_path)
+        except Exception as exc:  # noqa: BLE001
+            GLib.idle_add(self._show_toast, f"ODT download failed: {exc}")
+        else:
+            GLib.idle_add(self._show_toast, f"Saved ODT to {dest_path.name}.")
+        finally:
+            GLib.idle_add(self._set_status, "")
+            GLib.idle_add(self._update_search_download_button_state)
+
+    def _copy_odt(self, odt_path: Path, dest_path: Path) -> None:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(odt_path, dest_path)
+
+    def _update_search_download_button_state(self) -> None:
+        if not self._search_download_button:
+            return
+        has_result = bool(self._search_results)
+        self._search_download_button.set_visible(has_result)
+        self._search_download_button.set_sensitive(has_result)
 
     def _on_open_brief_clicked(self, _button: Gtk.Button, path: str) -> None:
         text = self._fetch_brief_text(path)

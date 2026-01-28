@@ -11,5 +11,4 @@ dependencies = [
     "langchain-voyageai>=0.3.0",
     "odfpy>=1.4.1",
     "pygobject>=3.54.5",
-    "pypandoc>=1.16.2",
 ]
