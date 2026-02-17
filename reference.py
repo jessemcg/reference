@@ -40,6 +40,12 @@ TEXT_VERSION = 2
 CONFIG_KEY_RAG_API_URL = "rag_api_url"
 CONFIG_KEY_RAG_MODEL_ID = "rag_model_id"
 CONFIG_KEY_RAG_API_KEY = "rag_api_key"
+CONFIG_KEY_RAG_BASIC_API_URL = "rag_basic_api_url"
+CONFIG_KEY_RAG_BASIC_MODEL_ID = "rag_basic_model_id"
+CONFIG_KEY_RAG_BASIC_API_KEY = "rag_basic_api_key"
+CONFIG_KEY_RAG_REASONING_API_URL = "rag_reasoning_api_url"
+CONFIG_KEY_RAG_REASONING_MODEL_ID = "rag_reasoning_model_id"
+CONFIG_KEY_RAG_REASONING_API_KEY = "rag_reasoning_api_key"
 CONFIG_KEY_RAG_PROMPT = "rag_prompt"
 CONFIG_KEY_RAG_PROMPT_NO_CITATIONS = "rag_prompt_no_citations"
 CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS = "rag_prompt_full_citations"
@@ -235,9 +241,12 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
 
 @dataclass
 class AiSettings:
-    rag_api_url: str
-    rag_model_id: str
-    rag_api_key: str
+    rag_basic_api_url: str
+    rag_basic_model_id: str
+    rag_basic_api_key: str
+    rag_reasoning_api_url: str
+    rag_reasoning_model_id: str
+    rag_reasoning_api_key: str
     rag_prompt_no_citations: str
     rag_prompt_full_citations: str
     rag_prompt_statutes_only: str
@@ -250,16 +259,31 @@ class AiSettings:
     deep_ask_timeout_seconds: int
     deep_ask_show_reasoning: bool
 
-    def is_rag_ready(self) -> bool:
+    def _llm_ready(self, api_url: str, model_id: str, api_key: str) -> bool:
         return all(
             value.strip()
             for value in (
-                self.rag_api_url,
-                self.rag_model_id,
-                self.rag_api_key,
+                api_url,
+                model_id,
+                api_key,
                 self.rag_prompt_no_citations,
             )
-        ) and self.embeddings_ready()
+        )
+
+    def is_rag_ready_for_prompt(self, prompt_kind: str) -> bool:
+        if prompt_kind in {RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY}:
+            llm_ready = self._llm_ready(
+                self.rag_reasoning_api_url,
+                self.rag_reasoning_model_id,
+                self.rag_reasoning_api_key,
+            )
+        else:
+            llm_ready = self._llm_ready(
+                self.rag_basic_api_url,
+                self.rag_basic_model_id,
+                self.rag_basic_api_key,
+            )
+        return llm_ready and self.embeddings_ready()
 
     def voyage_ready(self) -> bool:
         return all(value.strip() for value in (self.voyage_api_key, self.voyage_model))
@@ -305,10 +329,22 @@ def load_ai_settings() -> AiSettings:
         config.get(CONFIG_KEY_DEEP_ASK_SHOW_REASONING),
         DEFAULT_SHOW_REASONING_TRACE,
     )
+    legacy_rag_api_url = str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip()
+    legacy_rag_model_id = str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip()
+    legacy_rag_api_key = str(config.get(CONFIG_KEY_RAG_API_KEY, "") or "").strip()
     return AiSettings(
-        rag_api_url=str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip(),
-        rag_model_id=str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip(),
-        rag_api_key=str(config.get(CONFIG_KEY_RAG_API_KEY, "") or "").strip(),
+        rag_basic_api_url=str(config.get(CONFIG_KEY_RAG_BASIC_API_URL, legacy_rag_api_url) or "").strip(),
+        rag_basic_model_id=str(config.get(CONFIG_KEY_RAG_BASIC_MODEL_ID, legacy_rag_model_id) or "").strip(),
+        rag_basic_api_key=str(config.get(CONFIG_KEY_RAG_BASIC_API_KEY, legacy_rag_api_key) or "").strip(),
+        rag_reasoning_api_url=str(
+            config.get(CONFIG_KEY_RAG_REASONING_API_URL, legacy_rag_api_url) or ""
+        ).strip(),
+        rag_reasoning_model_id=str(
+            config.get(CONFIG_KEY_RAG_REASONING_MODEL_ID, legacy_rag_model_id) or ""
+        ).strip(),
+        rag_reasoning_api_key=str(
+            config.get(CONFIG_KEY_RAG_REASONING_API_KEY, legacy_rag_api_key) or ""
+        ).strip(),
         rag_prompt_no_citations=str(
             config.get(CONFIG_KEY_RAG_PROMPT_NO_CITATIONS, legacy_prompt) or legacy_prompt
         ).strip(),
@@ -341,9 +377,16 @@ def load_ai_settings() -> AiSettings:
 
 def save_ai_settings(settings: AiSettings) -> None:
     config = _read_config()
-    config[CONFIG_KEY_RAG_API_URL] = settings.rag_api_url
-    config[CONFIG_KEY_RAG_MODEL_ID] = settings.rag_model_id
-    config[CONFIG_KEY_RAG_API_KEY] = settings.rag_api_key
+    config[CONFIG_KEY_RAG_BASIC_API_URL] = settings.rag_basic_api_url
+    config[CONFIG_KEY_RAG_BASIC_MODEL_ID] = settings.rag_basic_model_id
+    config[CONFIG_KEY_RAG_BASIC_API_KEY] = settings.rag_basic_api_key
+    config[CONFIG_KEY_RAG_REASONING_API_URL] = settings.rag_reasoning_api_url
+    config[CONFIG_KEY_RAG_REASONING_MODEL_ID] = settings.rag_reasoning_model_id
+    config[CONFIG_KEY_RAG_REASONING_API_KEY] = settings.rag_reasoning_api_key
+    # Keep legacy keys in sync for backward compatibility with older app versions.
+    config[CONFIG_KEY_RAG_API_URL] = settings.rag_basic_api_url
+    config[CONFIG_KEY_RAG_MODEL_ID] = settings.rag_basic_model_id
+    config[CONFIG_KEY_RAG_API_KEY] = settings.rag_basic_api_key
     config[CONFIG_KEY_RAG_PROMPT_NO_CITATIONS] = settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
     config[CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS] = (
         settings.rag_prompt_full_citations or DEFAULT_RAG_PROMPT_FULL_CITATIONS
@@ -870,10 +913,24 @@ class ReferenceWindow(Adw.ApplicationWindow):
         prompt = settings.rag_prompt_no_citations
         return prompt or DEFAULT_RAG_PROMPT
 
+    def _resolve_rag_llm_settings(self, prompt_kind: str) -> tuple[str, str, str]:
+        settings = self._ai_settings
+        if prompt_kind in {RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY}:
+            return (
+                settings.rag_reasoning_api_url,
+                settings.rag_reasoning_api_key,
+                settings.rag_reasoning_model_id,
+            )
+        return (
+            settings.rag_basic_api_url,
+            settings.rag_basic_api_key,
+            settings.rag_basic_model_id,
+        )
+
     def _ask_rag_question(self, question: str, prompt_kind: str) -> None:
         if not question:
             return
-        if not self._ai_settings.is_rag_ready():
+        if not self._ai_settings.is_rag_ready_for_prompt(prompt_kind):
             self._show_toast("Configure RAG and embeddings settings first.")
             return
         if not CHROMA_DIR.exists():
@@ -888,9 +945,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
         cancel_event = threading.Event()
         self._rag_cancel_event = cancel_event
         prompt_text = self._resolve_rag_prompt(prompt_kind)
+        api_url, api_key, model_id = self._resolve_rag_llm_settings(prompt_kind)
         thread = threading.Thread(
             target=self._rag_worker,
-            args=(question, prompt_text, self._ai_settings, cancel_event, generation),
+            args=(question, prompt_text, api_url, api_key, model_id, self._ai_settings, cancel_event, generation),
             daemon=True,
         )
         self._rag_stream_thread = thread
@@ -900,6 +958,9 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self,
         question: str,
         prompt_text: str,
+        api_url: str,
+        api_key: str,
+        model_id: str,
         settings: AiSettings,
         cancel_event: threading.Event | None,
         generation: int,
@@ -911,9 +972,9 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 GLib.idle_add(self._on_rag_stream_finished, generation)
                 return
             self._stream_chat_completion(
-                api_url=settings.rag_api_url,
-                api_key=settings.rag_api_key,
-                model_id=settings.rag_model_id,
+                api_url=api_url,
+                api_key=api_key,
+                model_id=model_id,
                 messages=messages,
                 cancel_event=cancel_event,
                 generation=generation,
@@ -2041,9 +2102,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self.set_resizable(True)
         self._app = app
         self._parent = parent
-        self._rag_api_url_row: Adw.EntryRow | None = None
-        self._rag_model_row: Adw.EntryRow | None = None
-        self._rag_api_key_row: Adw.EntryRow | None = None
+        self._rag_basic_api_url_row: Adw.EntryRow | None = None
+        self._rag_basic_model_row: Adw.EntryRow | None = None
+        self._rag_basic_api_key_row: Adw.EntryRow | None = None
+        self._rag_reasoning_api_url_row: Adw.EntryRow | None = None
+        self._rag_reasoning_model_row: Adw.EntryRow | None = None
+        self._rag_reasoning_api_key_row: Adw.EntryRow | None = None
         self._rag_top_k_row: Adw.EntryRow | None = None
         self._rag_timeout_row: Adw.EntryRow | None = None
         self._rag_reasoning_row: Adw.SwitchRow | None = None
@@ -2093,41 +2157,67 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         display_group.add(search_font_size_row)
         self._search_font_size_row = search_font_size_row
 
-        rag_group = Adw.PreferencesGroup(title="RAG LLM (OpenAI Compatible)")
-        rag_group.add_css_class("list-stack")
-        rag_group.set_hexpand(True)
-        box.append(rag_group)
+        rag_basic_group = Adw.PreferencesGroup(title="Basic RAG LLM (No Citations)")
+        rag_basic_group.add_css_class("list-stack")
+        rag_basic_group.set_hexpand(True)
+        box.append(rag_basic_group)
 
-        rag_api_url = Adw.EntryRow(title="API URL")
-        rag_api_url.set_hexpand(True)
-        rag_group.add(rag_api_url)
-        self._rag_api_url_row = rag_api_url
+        rag_basic_api_url = Adw.EntryRow(title="API URL")
+        rag_basic_api_url.set_hexpand(True)
+        rag_basic_group.add(rag_basic_api_url)
+        self._rag_basic_api_url_row = rag_basic_api_url
 
-        rag_model = Adw.EntryRow(title="Model ID")
-        rag_model.set_hexpand(True)
-        rag_group.add(rag_model)
-        self._rag_model_row = rag_model
+        rag_basic_model = Adw.EntryRow(title="Model ID")
+        rag_basic_model.set_hexpand(True)
+        rag_basic_group.add(rag_basic_model)
+        self._rag_basic_model_row = rag_basic_model
+
+        rag_basic_api_key = self._build_password_row("API Key")
+        rag_basic_group.add(rag_basic_api_key)
+        self._rag_basic_api_key_row = rag_basic_api_key
+
+        rag_reasoning_group = Adw.PreferencesGroup(
+            title="Reasoning RAG LLM (Full Citations and Statutes/Rules Only)"
+        )
+        rag_reasoning_group.add_css_class("list-stack")
+        rag_reasoning_group.set_hexpand(True)
+        box.append(rag_reasoning_group)
+
+        rag_reasoning_api_url = Adw.EntryRow(title="API URL")
+        rag_reasoning_api_url.set_hexpand(True)
+        rag_reasoning_group.add(rag_reasoning_api_url)
+        self._rag_reasoning_api_url_row = rag_reasoning_api_url
+
+        rag_reasoning_model = Adw.EntryRow(title="Model ID")
+        rag_reasoning_model.set_hexpand(True)
+        rag_reasoning_group.add(rag_reasoning_model)
+        self._rag_reasoning_model_row = rag_reasoning_model
+
+        rag_reasoning_api_key = self._build_password_row("API Key")
+        rag_reasoning_group.add(rag_reasoning_api_key)
+        self._rag_reasoning_api_key_row = rag_reasoning_api_key
+
+        rag_runtime_group = Adw.PreferencesGroup(title="RAG Runtime")
+        rag_runtime_group.add_css_class("list-stack")
+        rag_runtime_group.set_hexpand(True)
+        box.append(rag_runtime_group)
 
         rag_top_k = Adw.EntryRow(title="RAG Context Chunks (k)")
         rag_top_k.set_hexpand(True)
-        rag_group.add(rag_top_k)
+        rag_runtime_group.add(rag_top_k)
         self._rag_top_k_row = rag_top_k
 
         rag_timeout = Adw.EntryRow(title="RAG Timeout (seconds)")
         rag_timeout.set_hexpand(True)
-        rag_group.add(rag_timeout)
+        rag_runtime_group.add(rag_timeout)
         self._rag_timeout_row = rag_timeout
 
         rag_reasoning = Adw.SwitchRow(
             title="Show Reasoning Trace",
             subtitle="Display streamed reasoning tokens when emitted by the model.",
         )
-        rag_group.add(rag_reasoning)
+        rag_runtime_group.add(rag_reasoning)
         self._rag_reasoning_row = rag_reasoning
-
-        rag_api_key = self._build_password_row("API Key")
-        rag_group.add(rag_api_key)
-        self._rag_api_key_row = rag_api_key
 
         embeddings_group = Adw.PreferencesGroup(title="Embeddings")
         embeddings_group.add_css_class("list-stack")
@@ -2268,12 +2358,18 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
 
     def _load_settings(self) -> None:
         settings = load_ai_settings()
-        if self._rag_api_url_row:
-            self._rag_api_url_row.set_text(settings.rag_api_url)
-        if self._rag_model_row:
-            self._rag_model_row.set_text(settings.rag_model_id)
-        if self._rag_api_key_row:
-            self._rag_api_key_row.set_text(settings.rag_api_key)
+        if self._rag_basic_api_url_row:
+            self._rag_basic_api_url_row.set_text(settings.rag_basic_api_url)
+        if self._rag_basic_model_row:
+            self._rag_basic_model_row.set_text(settings.rag_basic_model_id)
+        if self._rag_basic_api_key_row:
+            self._rag_basic_api_key_row.set_text(settings.rag_basic_api_key)
+        if self._rag_reasoning_api_url_row:
+            self._rag_reasoning_api_url_row.set_text(settings.rag_reasoning_api_url)
+        if self._rag_reasoning_model_row:
+            self._rag_reasoning_model_row.set_text(settings.rag_reasoning_model_id)
+        if self._rag_reasoning_api_key_row:
+            self._rag_reasoning_api_key_row.set_text(settings.rag_reasoning_api_key)
         if self._rag_top_k_row:
             self._rag_top_k_row.set_text(str(settings.rag_top_k))
         if self._rag_timeout_row:
@@ -2315,9 +2411,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if not all(
             [
-                self._rag_api_url_row,
-                self._rag_model_row,
-                self._rag_api_key_row,
+                self._rag_basic_api_url_row,
+                self._rag_basic_model_row,
+                self._rag_basic_api_key_row,
+                self._rag_reasoning_api_url_row,
+                self._rag_reasoning_model_row,
+                self._rag_reasoning_api_key_row,
                 self._embeddings_provider_row,
                 self._voyage_model_row,
                 self._voyage_key_row,
@@ -2329,9 +2428,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         ):
             return
         settings = AiSettings(
-            rag_api_url=self._rag_api_url_row.get_text().strip(),
-            rag_model_id=self._rag_model_row.get_text().strip(),
-            rag_api_key=self._rag_api_key_row.get_text().strip(),
+            rag_basic_api_url=self._rag_basic_api_url_row.get_text().strip(),
+            rag_basic_model_id=self._rag_basic_model_row.get_text().strip(),
+            rag_basic_api_key=self._rag_basic_api_key_row.get_text().strip(),
+            rag_reasoning_api_url=self._rag_reasoning_api_url_row.get_text().strip(),
+            rag_reasoning_model_id=self._rag_reasoning_model_row.get_text().strip(),
+            rag_reasoning_api_key=self._rag_reasoning_api_key_row.get_text().strip(),
             rag_prompt_no_citations=self._prompt_text(
                 RAG_PROMPT_NO_CITATIONS,
                 DEFAULT_RAG_PROMPT,
