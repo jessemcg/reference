@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import re
 import shutil
 import sqlite3
@@ -40,6 +41,13 @@ CONFIG_KEY_RAG_PROMPT_NO_CITATIONS = "rag_prompt_no_citations"
 CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS = "rag_prompt_full_citations"
 CONFIG_KEY_RAG_PROMPT_STATUTES_ONLY = "rag_prompt_statutes_only"
 CONFIG_KEY_RAG_TOP_K = "rag_top_k"
+CONFIG_KEY_RAG_PROVIDER = "rag_provider"
+CONFIG_KEY_RAG_VOYAGE_API_KEY = "rag_voyage_api_key"
+CONFIG_KEY_RAG_VOYAGE_MODEL = "rag_voyage_model"
+CONFIG_KEY_RAG_ISAACUS_API_KEY = "rag_isaacus_api_key"
+CONFIG_KEY_RAG_ISAACUS_MODEL = "rag_isaacus_model"
+CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS = "deep_ask_timeout_seconds"
+CONFIG_KEY_DEEP_ASK_SHOW_REASONING = "deep_ask_show_reasoning"
 CONFIG_KEY_VOYAGE_API_KEY = "voyage_api_key"
 CONFIG_KEY_VOYAGE_MODEL = "voyage_model"
 CONFIG_KEY_RAG_OUTPUT_FONT_SIZE = "rag_output_font_size"
@@ -82,6 +90,13 @@ BRIEF_TEXT_FONT_FAMILY = (
 RAG_PROMPT_NO_CITATIONS = "no_citations"
 RAG_PROMPT_FULL_CITATIONS = "full_citations"
 RAG_PROMPT_STATUTES_ONLY = "statutes_only"
+RAG_PROVIDER_VOYAGE = "voyage"
+RAG_PROVIDER_ISAACUS = "isaacus"
+DEFAULT_RAG_PROVIDER = RAG_PROVIDER_VOYAGE
+DEFAULT_RAG_VOYAGE_MODEL = "voyage-law-2"
+DEFAULT_RAG_ISAACUS_MODEL = "kanon-2-embedder"
+DEFAULT_STREAM_TIMEOUT_SECONDS = 300
+DEFAULT_SHOW_REASONING_TRACE = False
 
 AI_LINK_SPAN_RE = re.compile(r'(?:\"|“)(.+?)(?:\"|”)|\*\*(.+?)\*\*', re.DOTALL)
 LINK_TRAILING_PUNCTUATION = ",.;:!?)]"
@@ -119,6 +134,57 @@ def split_link_phrase(phrase: str) -> tuple[str, str]:
 def _normalize_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text.rstrip()
+
+
+def _normalize_rag_provider(value: str) -> str:
+    provider = (value or "").strip().lower()
+    if provider not in {RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS}:
+        return DEFAULT_RAG_PROVIDER
+    return provider
+
+
+def _extract_embedding_vectors(response: Any) -> list[list[float]]:
+    embeddings = getattr(response, "embeddings", None)
+    if embeddings is None and isinstance(response, dict):
+        embeddings = response.get("embeddings")
+    if not isinstance(embeddings, list):
+        raise ValueError("Invalid embeddings response format.")
+    vectors: list[list[float]] = []
+    for item in embeddings:
+        vector = getattr(item, "embedding", None)
+        if vector is None and isinstance(item, dict):
+            vector = item.get("embedding")
+        if not isinstance(vector, list):
+            raise ValueError("Missing embedding vector in response.")
+        vectors.append(vector)
+    return vectors
+
+
+class IsaacusEmbeddings:
+    def __init__(self, client: Any, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        response = self._client.embeddings.create(
+            model=self._model,
+            texts=texts,
+            task="retrieval/document",
+        )
+        return _extract_embedding_vectors(response)
+
+    def embed_query(self, text: str) -> list[float]:
+        response = self._client.embeddings.create(
+            model=self._model,
+            texts=[text],
+            task="retrieval/query",
+        )
+        vectors = _extract_embedding_vectors(response)
+        if not vectors:
+            raise ValueError("Isaacus returned no embedding vectors.")
+        return vectors[0]
 
 
 def _extract_odt_text(path: Path) -> str:
@@ -172,8 +238,13 @@ class AiSettings:
     rag_prompt_full_citations: str
     rag_prompt_statutes_only: str
     rag_top_k: int
+    rag_provider: str
     voyage_api_key: str
     voyage_model: str
+    isaacus_api_key: str
+    isaacus_model: str
+    deep_ask_timeout_seconds: int
+    deep_ask_show_reasoning: bool
 
     def is_rag_ready(self) -> bool:
         return all(
@@ -183,13 +254,26 @@ class AiSettings:
                 self.rag_model_id,
                 self.rag_api_key,
                 self.rag_prompt_no_citations,
-                self.voyage_api_key,
-                self.voyage_model,
             )
-        )
+        ) and self.embeddings_ready()
 
     def voyage_ready(self) -> bool:
         return all(value.strip() for value in (self.voyage_api_key, self.voyage_model))
+
+    def isaacus_ready(self) -> bool:
+        return all(value.strip() for value in (self.isaacus_api_key, self.isaacus_model))
+
+    def embeddings_ready(self) -> bool:
+        provider = _normalize_rag_provider(self.rag_provider)
+        if provider == RAG_PROVIDER_ISAACUS:
+            return self.isaacus_ready()
+        return self.voyage_ready()
+
+    def embeddings_provider_name(self) -> str:
+        provider = _normalize_rag_provider(self.rag_provider)
+        if provider == RAG_PROVIDER_ISAACUS:
+            return "Isaacus"
+        return "Voyage"
 
 
 def load_ai_settings() -> AiSettings:
@@ -201,6 +285,22 @@ def load_ai_settings() -> AiSettings:
         rag_top_k = DEFAULT_RAG_TOP_K
     rag_top_k = _clamp_rag_top_k(rag_top_k)
     legacy_prompt = str(config.get(CONFIG_KEY_RAG_PROMPT, DEFAULT_RAG_PROMPT) or DEFAULT_RAG_PROMPT).strip()
+    rag_provider = _normalize_rag_provider(str(config.get(CONFIG_KEY_RAG_PROVIDER, DEFAULT_RAG_PROVIDER) or ""))
+    voyage_model = str(
+        config.get(
+            CONFIG_KEY_RAG_VOYAGE_MODEL,
+            config.get(CONFIG_KEY_VOYAGE_MODEL, DEFAULT_RAG_VOYAGE_MODEL),
+        )
+        or DEFAULT_RAG_VOYAGE_MODEL
+    ).strip()
+    deep_ask_timeout_seconds = _coerce_timeout_seconds(
+        config.get(CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS),
+        DEFAULT_STREAM_TIMEOUT_SECONDS,
+    )
+    deep_ask_show_reasoning = _coerce_bool_config(
+        config.get(CONFIG_KEY_DEEP_ASK_SHOW_REASONING),
+        DEFAULT_SHOW_REASONING_TRACE,
+    )
     return AiSettings(
         rag_api_url=str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip(),
         rag_model_id=str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip(),
@@ -217,8 +317,21 @@ def load_ai_settings() -> AiSettings:
             or DEFAULT_RAG_PROMPT_STATUTES_ONLY
         ).strip(),
         rag_top_k=rag_top_k,
-        voyage_api_key=str(config.get(CONFIG_KEY_VOYAGE_API_KEY, "") or "").strip(),
-        voyage_model=str(config.get(CONFIG_KEY_VOYAGE_MODEL, "voyage-law-2") or "voyage-law-2").strip(),
+        rag_provider=rag_provider,
+        voyage_api_key=str(
+            config.get(
+                CONFIG_KEY_RAG_VOYAGE_API_KEY,
+                config.get(CONFIG_KEY_VOYAGE_API_KEY, ""),
+            )
+            or ""
+        ).strip(),
+        voyage_model=voyage_model or DEFAULT_RAG_VOYAGE_MODEL,
+        isaacus_api_key=str(config.get(CONFIG_KEY_RAG_ISAACUS_API_KEY, "") or "").strip(),
+        isaacus_model=str(
+            config.get(CONFIG_KEY_RAG_ISAACUS_MODEL, DEFAULT_RAG_ISAACUS_MODEL) or DEFAULT_RAG_ISAACUS_MODEL
+        ).strip(),
+        deep_ask_timeout_seconds=deep_ask_timeout_seconds,
+        deep_ask_show_reasoning=deep_ask_show_reasoning,
     )
 
 
@@ -236,8 +349,18 @@ def save_ai_settings(settings: AiSettings) -> None:
     )
     config[CONFIG_KEY_RAG_PROMPT] = settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
     config[CONFIG_KEY_RAG_TOP_K] = _clamp_rag_top_k(int(settings.rag_top_k))
+    config[CONFIG_KEY_RAG_PROVIDER] = _normalize_rag_provider(settings.rag_provider)
     config[CONFIG_KEY_VOYAGE_API_KEY] = settings.voyage_api_key
-    config[CONFIG_KEY_VOYAGE_MODEL] = settings.voyage_model or "voyage-law-2"
+    config[CONFIG_KEY_VOYAGE_MODEL] = settings.voyage_model or DEFAULT_RAG_VOYAGE_MODEL
+    config[CONFIG_KEY_RAG_VOYAGE_API_KEY] = settings.voyage_api_key
+    config[CONFIG_KEY_RAG_VOYAGE_MODEL] = settings.voyage_model or DEFAULT_RAG_VOYAGE_MODEL
+    config[CONFIG_KEY_RAG_ISAACUS_API_KEY] = settings.isaacus_api_key
+    config[CONFIG_KEY_RAG_ISAACUS_MODEL] = settings.isaacus_model or DEFAULT_RAG_ISAACUS_MODEL
+    config[CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS] = _coerce_timeout_seconds(
+        settings.deep_ask_timeout_seconds,
+        DEFAULT_STREAM_TIMEOUT_SECONDS,
+    )
+    config[CONFIG_KEY_DEEP_ASK_SHOW_REASONING] = bool(settings.deep_ask_show_reasoning)
     _write_config(config)
 
 
@@ -255,6 +378,28 @@ def _clamp_rag_top_k(value: int) -> int:
     if value > 20:
         return 20
     return value
+
+
+def _coerce_timeout_seconds(value: Any, default: int) -> int:
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(3600, max(60, seconds))
+
+
+def _coerce_bool_config(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def load_ui_settings() -> tuple[int, int]:
@@ -396,6 +541,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_lock = threading.Lock()
 
         self._toast_overlay: Adw.ToastOverlay | None = None
+        self._status_spinner: Gtk.Spinner | None = None
         self._status_label: Gtk.Label | None = None
         self._rag_entry: Gtk.Entry | None = None
         self._search_entry: Gtk.SearchEntry | None = None
@@ -480,11 +626,21 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
         outer.append(controls)
 
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        status_row.set_hexpand(True)
+        status_row.set_valign(Gtk.Align.CENTER)
+        status_spinner = Gtk.Spinner(spinning=False)
+        status_spinner.set_visible(False)
+        status_row.append(status_spinner)
+        self._status_spinner = status_spinner
+
         status_label = Gtk.Label(label="", xalign=0)
         status_label.add_css_class("dim-label")
         status_label.set_wrap(True)
+        status_label.set_hexpand(True)
         status_label.set_visible(False)
-        outer.append(status_label)
+        status_row.append(status_label)
+        outer.append(status_row)
         self._status_label = status_label
 
         rag_scroller, rag_state = self._build_rag_output_view()
@@ -673,7 +829,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
         toast.set_timeout(4)
         self._toast_overlay.add_toast(toast)
 
-    def _set_status(self, text: str) -> None:
+    def _set_status(self, text: str, *, spinning: bool = False) -> None:
+        if self._status_spinner:
+            self._status_spinner.set_spinning(spinning)
+            self._status_spinner.set_visible(spinning)
         if self._status_label:
             self._status_label.set_text(text)
             self._status_label.set_visible(bool(text))
@@ -715,7 +874,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if not question:
             return
         if not self._ai_settings.is_rag_ready():
-            self._show_toast("Configure RAG and Voyage settings first.")
+            self._show_toast("Configure RAG and embeddings settings first.")
             return
         if not CHROMA_DIR.exists():
             self._show_toast("No embeddings found. Click Update Index first.")
@@ -723,7 +882,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._stop_rag_stream_if_running()
         self._rag_request_generation += 1
         generation = self._rag_request_generation
-        self._set_status("Thinking…")
+        self._set_status("", spinning=True)
         self._last_rag_answer = ""
         self._apply_ai_output_links("", self._rag_output_state)
         cancel_event = threading.Event()
@@ -758,6 +917,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 messages=messages,
                 cancel_event=cancel_event,
                 generation=generation,
+                include_reasoning=settings.deep_ask_show_reasoning,
+                request_timeout_seconds=settings.deep_ask_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001
             GLib.idle_add(self._on_rag_stream_error, str(exc), generation)
@@ -766,6 +927,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._set_status("")
         self._last_rag_answer = text
         self._apply_ai_output_links(text, self._rag_output_state)
+        self._scroll_rag_output_to_bottom()
 
     def _stop_rag_stream_if_running(self) -> None:
         if self._rag_cancel_event:
@@ -786,7 +948,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
         new_text = self._last_rag_answer + text
         self._last_rag_answer = new_text
         self._apply_ai_output_links(new_text, self._rag_output_state)
-        self._set_status("Streaming…")
+        self._scroll_rag_output_to_bottom()
+        self._set_status("", spinning=True)
         return False
 
     def _on_rag_stream_finished(self, generation: int) -> bool:
@@ -794,7 +957,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             return False
         self._rag_stream_thread = None
         self._rag_cancel_event = None
-        self._set_status("")
+        self._set_status("", spinning=False)
         return False
 
     def _on_rag_stream_error(self, message: str, generation: int) -> bool:
@@ -802,7 +965,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             return False
         self._rag_stream_thread = None
         self._rag_cancel_event = None
-        self._set_status("RAG failed.")
+        self._set_status("RAG failed.", spinning=False)
         self._show_toast(message or "RAG request failed.")
         return False
 
@@ -811,7 +974,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             return False
         self._rag_stream_thread = None
         self._rag_cancel_event = None
-        self._set_status("")
+        self._set_status("", spinning=False)
         return False
 
     def _build_rag_messages(
@@ -845,10 +1008,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
     def _kickoff_rag_background_load(self) -> None:
         settings = self._ai_settings
-        if not settings.voyage_ready():
+        if not settings.embeddings_ready():
             with self._rag_lock:
                 self._rag_vectorstore = None
-                self._rag_load_error = "Voyage settings missing."
+                self._rag_load_error = f"{settings.embeddings_provider_name()} settings missing."
                 self._rag_loading = False
                 self._rag_load_thread = None
             return
@@ -910,20 +1073,36 @@ class ReferenceWindow(Adw.ApplicationWindow):
         return vectorstore, error
 
     def _load_rag_vectorstore(self, settings: AiSettings) -> tuple[Any | None, str | None]:
-        if not settings.voyage_ready():
-            return None, "Voyage settings missing."
+        provider = _normalize_rag_provider(settings.rag_provider)
+        if not settings.embeddings_ready():
+            return None, f"{settings.embeddings_provider_name()} settings missing."
         if not CHROMA_DIR.exists():
             return None, "No embeddings found. Click Update Index first."
         try:
             from langchain_chroma import Chroma  # type: ignore
-            from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
         except ImportError:
-            return None, "Install langchain, langchain-chroma, and langchain-voyageai to enable RAG questions."
+            return None, "Install langchain and langchain-chroma to enable RAG questions."
         try:
-            embeddings = VoyageAIEmbeddings(
-                voyage_api_key=settings.voyage_api_key,
-                model=settings.voyage_model,
-            )
+            if provider == RAG_PROVIDER_ISAACUS:
+                try:
+                    isaacus_module = importlib.import_module("isaacus")
+                    isaacus_client_class = getattr(isaacus_module, "Isaacus")
+                except Exception:
+                    return None, "Install Isaacus SDK to enable Isaacus RAG embeddings."
+                isaacus_client = isaacus_client_class(api_key=settings.isaacus_api_key)
+                embeddings = IsaacusEmbeddings(
+                    client=isaacus_client,
+                    model=settings.isaacus_model,
+                )
+            else:
+                try:
+                    from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
+                except ImportError:
+                    return None, "Install langchain-voyageai and voyageai to enable Voyage RAG embeddings."
+                embeddings = VoyageAIEmbeddings(
+                    voyage_api_key=settings.voyage_api_key,
+                    model=settings.voyage_model,
+                )
             vectorstore = Chroma(
                 persist_directory=str(CHROMA_DIR),
                 embedding_function=embeddings,
@@ -941,6 +1120,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
         messages: list[dict[str, str]],
         cancel_event: threading.Event | None,
         generation: int,
+        include_reasoning: bool = False,
+        request_timeout_seconds: int = DEFAULT_STREAM_TIMEOUT_SECONDS,
     ) -> None:
         headers = {
             "Content-Type": "application/json",
@@ -956,8 +1137,12 @@ class ReferenceWindow(Adw.ApplicationWindow):
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(api_url, data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                for chunk in self._iter_sse_chunks(resp, cancel_event):
+            timeout_seconds = _coerce_timeout_seconds(
+                request_timeout_seconds,
+                DEFAULT_STREAM_TIMEOUT_SECONDS,
+            )
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                for chunk in self._iter_sse_chunks(resp, cancel_event, include_reasoning=include_reasoning):
                     if cancel_event and cancel_event.is_set():
                         GLib.idle_add(self._on_rag_stream_cancelled, generation)
                         return
@@ -979,7 +1164,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self,
         resp: Any,
         cancel_event: threading.Event | None,
+        *,
+        include_reasoning: bool = False,
     ) -> Iterable[str]:
+        in_reasoning_trace = False
         while True:
             if cancel_event and cancel_event.is_set():
                 break
@@ -998,32 +1186,68 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 payload = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            delta_text = self._extract_delta_text(payload)
-            if delta_text:
-                yield delta_text
+            answer_text, reasoning_text = self._extract_stream_text_parts(payload)
+            if include_reasoning and reasoning_text:
+                if not in_reasoning_trace:
+                    in_reasoning_trace = True
+                    yield "\n[Reasoning Trace]\n"
+                yield reasoning_text
+            if answer_text:
+                if include_reasoning and in_reasoning_trace:
+                    in_reasoning_trace = False
+                    yield "\n[Answer]\n"
+                yield answer_text
 
-    def _extract_delta_text(self, payload: Any) -> str:
+    def _extract_stream_text_parts(self, payload: Any) -> tuple[str, str]:
+        answer_text = ""
+        reasoning_text = ""
         choices = payload.get("choices") if isinstance(payload, dict) else None
         if isinstance(choices, list) and choices:
             first = choices[0] or {}
             delta = first.get("delta") or first.get("message") or first
             if isinstance(delta, dict):
-                text = delta.get("content") or delta.get("text")
-                if isinstance(text, list):
-                    merged = []
-                    for item in text:
-                        if isinstance(item, dict):
-                            merged.append(str(item.get("text", "")))
-                        elif isinstance(item, str):
-                            merged.append(item)
-                    return "".join(merged)
-                if isinstance(text, str):
-                    return text
+                answer_text = self._coerce_stream_text(
+                    delta.get("content") if "content" in delta else delta.get("text")
+                )
+                reasoning_text = self._coerce_stream_text(
+                    delta.get("reasoning_content")
+                    if "reasoning_content" in delta
+                    else delta.get("reasoning")
+                    if "reasoning" in delta
+                    else delta.get("thinking")
+                )
         if isinstance(payload, dict):
             fallback = payload.get("data") or payload.get("text")
             if isinstance(fallback, str):
-                return fallback
-        return ""
+                answer_text = answer_text or fallback
+        return answer_text, reasoning_text
+
+    def _coerce_stream_text(self, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            return ""
+        merged: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                candidate = item.get("text")
+                if isinstance(candidate, str):
+                    merged.append(candidate)
+            elif isinstance(item, str):
+                merged.append(item)
+        return "".join(merged)
+
+    def _scroll_rag_output_to_bottom(self) -> None:
+        scroller = self._rag_output_state.scroller
+        if scroller is None:
+            return
+        vadj = scroller.get_vadjustment()
+        if vadj is None:
+            return
+        lower = vadj.get_lower()
+        upper = vadj.get_upper()
+        page_size = vadj.get_page_size()
+        vadj.set_value(max(lower, upper - page_size))
 
     def _on_search_activate(self, entry: Gtk.SearchEntry) -> None:
         query = entry.get_text().strip()
@@ -1400,10 +1624,13 @@ class ReferenceWindow(Adw.ApplicationWindow):
         conn.commit()
         conn.close()
 
-        if settings.voyage_ready():
+        if settings.embeddings_ready():
             self._update_embeddings(settings, changed_paths, removed_paths)
         elif changed_paths or removed_paths:
-            GLib.idle_add(self._show_toast, "Voyage settings missing; embeddings not updated.")
+            GLib.idle_add(
+                self._show_toast,
+                f"{settings.embeddings_provider_name()} settings missing; embeddings not updated.",
+            )
 
         return (
             f"Indexed {len(files)} briefs. Updated {len(changed_paths)}, removed {len(removed_paths)}."
@@ -1418,12 +1645,23 @@ class ReferenceWindow(Adw.ApplicationWindow):
         from langchain_chroma import Chroma  # type: ignore
         from langchain_core.documents import Document  # type: ignore
         from langchain_text_splitters import RecursiveCharacterTextSplitter  # type: ignore
-        from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
+        provider = _normalize_rag_provider(settings.rag_provider)
 
-        embeddings = VoyageAIEmbeddings(
-            voyage_api_key=settings.voyage_api_key,
-            model=settings.voyage_model,
-        )
+        if provider == RAG_PROVIDER_ISAACUS:
+            isaacus_module = importlib.import_module("isaacus")
+            isaacus_client_class = getattr(isaacus_module, "Isaacus")
+            isaacus_client = isaacus_client_class(api_key=settings.isaacus_api_key)
+            embeddings: Any = IsaacusEmbeddings(
+                client=isaacus_client,
+                model=settings.isaacus_model,
+            )
+        else:
+            from langchain_voyageai import VoyageAIEmbeddings  # type: ignore
+
+            embeddings = VoyageAIEmbeddings(
+                voyage_api_key=settings.voyage_api_key,
+                model=settings.voyage_model,
+            )
         vectorstore = Chroma(
             persist_directory=str(CHROMA_DIR),
             embedding_function=embeddings,
@@ -1807,8 +2045,14 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._rag_model_row: Adw.EntryRow | None = None
         self._rag_api_key_row: Adw.EntryRow | None = None
         self._rag_top_k_row: Adw.EntryRow | None = None
+        self._rag_timeout_row: Adw.EntryRow | None = None
+        self._rag_reasoning_row: Adw.SwitchRow | None = None
+        self._embeddings_provider_row: Adw.ComboRow | None = None
+        self._embeddings_provider_values: list[str] = [RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS]
         self._voyage_model_row: Adw.EntryRow | None = None
         self._voyage_key_row: Adw.EntryRow | None = None
+        self._isaacus_model_row: Adw.EntryRow | None = None
+        self._isaacus_key_row: Adw.EntryRow | None = None
         self._font_size_row: Adw.EntryRow | None = None
         self._search_font_size_row: Adw.EntryRow | None = None
         self._prompt_buffers: dict[str, Gtk.TextBuffer] = {}
@@ -1869,23 +2113,49 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         rag_group.add(rag_top_k)
         self._rag_top_k_row = rag_top_k
 
+        rag_timeout = Adw.EntryRow(title="RAG Timeout (seconds)")
+        rag_timeout.set_hexpand(True)
+        rag_group.add(rag_timeout)
+        self._rag_timeout_row = rag_timeout
+
+        rag_reasoning = Adw.SwitchRow(
+            title="Show Reasoning Trace",
+            subtitle="Display streamed reasoning tokens when emitted by the model.",
+        )
+        rag_group.add(rag_reasoning)
+        self._rag_reasoning_row = rag_reasoning
+
         rag_api_key = self._build_password_row("API Key")
         rag_group.add(rag_api_key)
         self._rag_api_key_row = rag_api_key
 
-        voyage_group = Adw.PreferencesGroup(title="Voyage Embeddings")
-        voyage_group.add_css_class("list-stack")
-        voyage_group.set_hexpand(True)
-        box.append(voyage_group)
+        embeddings_group = Adw.PreferencesGroup(title="Embeddings")
+        embeddings_group.add_css_class("list-stack")
+        embeddings_group.set_hexpand(True)
+        box.append(embeddings_group)
+
+        embeddings_provider = Adw.ComboRow(title="Provider")
+        embeddings_provider.set_model(Gtk.StringList.new(["VoyageAI", "Isaacus"]))
+        embeddings_group.add(embeddings_provider)
+        self._embeddings_provider_row = embeddings_provider
 
         voyage_model = Adw.EntryRow(title="Voyage Model")
         voyage_model.set_hexpand(True)
-        voyage_group.add(voyage_model)
+        embeddings_group.add(voyage_model)
         self._voyage_model_row = voyage_model
 
         voyage_key = self._build_password_row("Voyage API Key")
-        voyage_group.add(voyage_key)
+        embeddings_group.add(voyage_key)
         self._voyage_key_row = voyage_key
+
+        isaacus_model = Adw.EntryRow(title="Isaacus Model")
+        isaacus_model.set_hexpand(True)
+        embeddings_group.add(isaacus_model)
+        self._isaacus_model_row = isaacus_model
+
+        isaacus_key = self._build_password_row("Isaacus API Key")
+        embeddings_group.add(isaacus_key)
+        self._isaacus_key_row = isaacus_key
 
         self._add_prompt_section(
             box,
@@ -2006,10 +2276,24 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             self._rag_api_key_row.set_text(settings.rag_api_key)
         if self._rag_top_k_row:
             self._rag_top_k_row.set_text(str(settings.rag_top_k))
+        if self._rag_timeout_row:
+            self._rag_timeout_row.set_text(str(settings.deep_ask_timeout_seconds))
+        if self._rag_reasoning_row:
+            self._rag_reasoning_row.set_active(bool(settings.deep_ask_show_reasoning))
+        if self._embeddings_provider_row:
+            provider = _normalize_rag_provider(settings.rag_provider)
+            if provider in self._embeddings_provider_values:
+                self._embeddings_provider_row.set_selected(self._embeddings_provider_values.index(provider))
+            else:
+                self._embeddings_provider_row.set_selected(0)
         if self._voyage_model_row:
             self._voyage_model_row.set_text(settings.voyage_model)
         if self._voyage_key_row:
             self._voyage_key_row.set_text(settings.voyage_api_key)
+        if self._isaacus_model_row:
+            self._isaacus_model_row.set_text(settings.isaacus_model)
+        if self._isaacus_key_row:
+            self._isaacus_key_row.set_text(settings.isaacus_api_key)
         if RAG_PROMPT_NO_CITATIONS in self._prompt_buffers:
             self._prompt_buffers[RAG_PROMPT_NO_CITATIONS].set_text(
                 settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
@@ -2034,8 +2318,13 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 self._rag_api_url_row,
                 self._rag_model_row,
                 self._rag_api_key_row,
+                self._embeddings_provider_row,
                 self._voyage_model_row,
                 self._voyage_key_row,
+                self._isaacus_model_row,
+                self._isaacus_key_row,
+                self._rag_timeout_row,
+                self._rag_reasoning_row,
             ]
         ):
             return
@@ -2059,15 +2348,30 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             ).strip()
             or DEFAULT_RAG_PROMPT_STATUTES_ONLY,
             rag_top_k=DEFAULT_RAG_TOP_K,
+            rag_provider=DEFAULT_RAG_PROVIDER,
             voyage_api_key=self._voyage_key_row.get_text().strip(),
-            voyage_model=self._voyage_model_row.get_text().strip() or "voyage-law-2",
+            voyage_model=self._voyage_model_row.get_text().strip() or DEFAULT_RAG_VOYAGE_MODEL,
+            isaacus_api_key=self._isaacus_key_row.get_text().strip(),
+            isaacus_model=self._isaacus_model_row.get_text().strip() or DEFAULT_RAG_ISAACUS_MODEL,
+            deep_ask_timeout_seconds=DEFAULT_STREAM_TIMEOUT_SECONDS,
+            deep_ask_show_reasoning=bool(self._rag_reasoning_row.get_active()),
         )
+        provider_index = int(self._embeddings_provider_row.get_selected())
+        if 0 <= provider_index < len(self._embeddings_provider_values):
+            settings.rag_provider = self._embeddings_provider_values[provider_index]
+        else:
+            settings.rag_provider = DEFAULT_RAG_PROVIDER
         if self._rag_top_k_row:
             raw_top_k = self._rag_top_k_row.get_text().strip()
             try:
                 settings.rag_top_k = _clamp_rag_top_k(int(raw_top_k))
             except (TypeError, ValueError):
                 settings.rag_top_k = DEFAULT_RAG_TOP_K
+        if self._rag_timeout_row:
+            settings.deep_ask_timeout_seconds = _coerce_timeout_seconds(
+                self._rag_timeout_row.get_text().strip(),
+                DEFAULT_STREAM_TIMEOUT_SECONDS,
+            )
         save_ai_settings(settings)
         self._parent._ai_settings = settings
         self._parent._kickoff_rag_background_load()
