@@ -6,9 +6,12 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "chromadb>=1.4.0",
+    "isaacus>=0.19.1",
     "langchain-chroma>=1.1.0",
     "langchain-text-splitters>=1.1.0",
     "langchain-voyageai>=0.3.0",
     "odfpy>=1.4.1",
+    "pandoc>=2.4",
     "pygobject>=3.54.5",
+    "pypandoc>=1.16.2",
 ]

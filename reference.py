@@ -16,6 +16,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import gi
+try:
+    import pypandoc  # type: ignore
+except ImportError:
+    pypandoc = None
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
