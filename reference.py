@@ -851,16 +851,12 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
     def _on_rag_question_activate(self, entry: Gtk.Entry) -> None:
         question = entry.get_text().strip()
-        if question:
-            entry.set_text("")
         self._ask_rag_question(question, RAG_PROMPT_NO_CITATIONS)
 
     def _on_rag_question_clicked(self, _button: Gtk.Button, prompt_kind: str) -> None:
         if not self._rag_entry:
             return
         question = self._rag_entry.get_text().strip()
-        if question:
-            self._rag_entry.set_text("")
         self._ask_rag_question(question, prompt_kind)
 
     def _resolve_rag_prompt(self, prompt_kind: str) -> str:
