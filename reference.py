@@ -46,6 +46,24 @@ CONFIG_KEY_RAG_BASIC_API_KEY = "rag_basic_api_key"
 CONFIG_KEY_RAG_REASONING_API_URL = "rag_reasoning_api_url"
 CONFIG_KEY_RAG_REASONING_MODEL_ID = "rag_reasoning_model_id"
 CONFIG_KEY_RAG_REASONING_API_KEY = "rag_reasoning_api_key"
+CONFIG_KEY_RAG_NO_CITATIONS_API_URL = "rag_no_citations_api_url"
+CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID = "rag_no_citations_model_id"
+CONFIG_KEY_RAG_NO_CITATIONS_API_KEY = "rag_no_citations_api_key"
+CONFIG_KEY_RAG_NO_CITATIONS_KIMI_REASONING = "rag_no_citations_kimi_reasoning"
+CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING = "rag_no_citations_deepseek_reasoning"
+CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE = "rag_no_citations_show_reasoning_trace"
+CONFIG_KEY_RAG_FULL_CITATIONS_API_URL = "rag_full_citations_api_url"
+CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID = "rag_full_citations_model_id"
+CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY = "rag_full_citations_api_key"
+CONFIG_KEY_RAG_FULL_CITATIONS_KIMI_REASONING = "rag_full_citations_kimi_reasoning"
+CONFIG_KEY_RAG_FULL_CITATIONS_DEEPSEEK_REASONING = "rag_full_citations_deepseek_reasoning"
+CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE = "rag_full_citations_show_reasoning_trace"
+CONFIG_KEY_RAG_STATUTES_ONLY_API_URL = "rag_statutes_only_api_url"
+CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID = "rag_statutes_only_model_id"
+CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY = "rag_statutes_only_api_key"
+CONFIG_KEY_RAG_STATUTES_ONLY_KIMI_REASONING = "rag_statutes_only_kimi_reasoning"
+CONFIG_KEY_RAG_STATUTES_ONLY_DEEPSEEK_REASONING = "rag_statutes_only_deepseek_reasoning"
+CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE = "rag_statutes_only_show_reasoning_trace"
 CONFIG_KEY_RAG_PROMPT = "rag_prompt"
 CONFIG_KEY_RAG_PROMPT_NO_CITATIONS = "rag_prompt_no_citations"
 CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS = "rag_prompt_full_citations"
@@ -107,6 +125,8 @@ DEFAULT_RAG_VOYAGE_MODEL = "voyage-law-2"
 DEFAULT_RAG_ISAACUS_MODEL = "kanon-2-embedder"
 DEFAULT_STREAM_TIMEOUT_SECONDS = 300
 DEFAULT_SHOW_REASONING_TRACE = False
+DEFAULT_KIMI_REASONING_ENABLED = True
+DEFAULT_DEEPSEEK_REASONING_ENABLED = True
 
 AI_LINK_SPAN_RE = re.compile(r'(?:\"|“)(.+?)(?:\"|”)|\*\*(.+?)\*\*', re.DOTALL)
 LINK_TRAILING_PUNCTUATION = ",.;:!?)]"
@@ -151,6 +171,16 @@ def _normalize_rag_provider(value: str) -> str:
     if provider not in {RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS}:
         return DEFAULT_RAG_PROVIDER
     return provider
+
+
+def _model_looks_kimi(model_id: str) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return "kimi" in normalized or "moonshot" in normalized
+
+
+def _model_looks_deepseek(model_id: str) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return "deepseek" in normalized
 
 
 def _extract_embedding_vectors(response: Any) -> list[list[float]]:
@@ -241,12 +271,24 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
 
 @dataclass
 class AiSettings:
-    rag_basic_api_url: str
-    rag_basic_model_id: str
-    rag_basic_api_key: str
-    rag_reasoning_api_url: str
-    rag_reasoning_model_id: str
-    rag_reasoning_api_key: str
+    rag_no_citations_api_url: str
+    rag_no_citations_model_id: str
+    rag_no_citations_api_key: str
+    rag_no_citations_kimi_reasoning: bool
+    rag_no_citations_deepseek_reasoning: bool
+    rag_no_citations_show_reasoning_trace: bool
+    rag_full_citations_api_url: str
+    rag_full_citations_model_id: str
+    rag_full_citations_api_key: str
+    rag_full_citations_kimi_reasoning: bool
+    rag_full_citations_deepseek_reasoning: bool
+    rag_full_citations_show_reasoning_trace: bool
+    rag_statutes_only_api_url: str
+    rag_statutes_only_model_id: str
+    rag_statutes_only_api_key: str
+    rag_statutes_only_kimi_reasoning: bool
+    rag_statutes_only_deepseek_reasoning: bool
+    rag_statutes_only_show_reasoning_trace: bool
     rag_prompt_no_citations: str
     rag_prompt_full_citations: str
     rag_prompt_statutes_only: str
@@ -257,7 +299,6 @@ class AiSettings:
     isaacus_api_key: str
     isaacus_model: str
     deep_ask_timeout_seconds: int
-    deep_ask_show_reasoning: bool
 
     def _llm_ready(self, api_url: str, model_id: str, api_key: str) -> bool:
         return all(
@@ -270,19 +311,47 @@ class AiSettings:
             )
         )
 
+    def llm_settings_for_prompt(self, prompt_kind: str) -> tuple[str, str, str]:
+        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
+            return (
+                self.rag_full_citations_api_url,
+                self.rag_full_citations_api_key,
+                self.rag_full_citations_model_id,
+            )
+        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
+            return (
+                self.rag_statutes_only_api_url,
+                self.rag_statutes_only_api_key,
+                self.rag_statutes_only_model_id,
+            )
+        return (
+            self.rag_no_citations_api_url,
+            self.rag_no_citations_api_key,
+            self.rag_no_citations_model_id,
+        )
+
+    def reasoning_settings_for_prompt(self, prompt_kind: str) -> tuple[bool, bool, bool]:
+        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
+            return (
+                self.rag_full_citations_kimi_reasoning,
+                self.rag_full_citations_deepseek_reasoning,
+                self.rag_full_citations_show_reasoning_trace,
+            )
+        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
+            return (
+                self.rag_statutes_only_kimi_reasoning,
+                self.rag_statutes_only_deepseek_reasoning,
+                self.rag_statutes_only_show_reasoning_trace,
+            )
+        return (
+            self.rag_no_citations_kimi_reasoning,
+            self.rag_no_citations_deepseek_reasoning,
+            self.rag_no_citations_show_reasoning_trace,
+        )
+
     def is_rag_ready_for_prompt(self, prompt_kind: str) -> bool:
-        if prompt_kind in {RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY}:
-            llm_ready = self._llm_ready(
-                self.rag_reasoning_api_url,
-                self.rag_reasoning_model_id,
-                self.rag_reasoning_api_key,
-            )
-        else:
-            llm_ready = self._llm_ready(
-                self.rag_basic_api_url,
-                self.rag_basic_model_id,
-                self.rag_basic_api_key,
-            )
+        api_url, api_key, model_id = self.llm_settings_for_prompt(prompt_kind)
+        llm_ready = self._llm_ready(api_url, model_id, api_key)
         return llm_ready and self.embeddings_ready()
 
     def voyage_ready(self) -> bool:
@@ -325,26 +394,83 @@ def load_ai_settings() -> AiSettings:
         config.get(CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS),
         DEFAULT_STREAM_TIMEOUT_SECONDS,
     )
-    deep_ask_show_reasoning = _coerce_bool_config(
-        config.get(CONFIG_KEY_DEEP_ASK_SHOW_REASONING),
-        DEFAULT_SHOW_REASONING_TRACE,
-    )
     legacy_rag_api_url = str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip()
     legacy_rag_model_id = str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip()
     legacy_rag_api_key = str(config.get(CONFIG_KEY_RAG_API_KEY, "") or "").strip()
+    legacy_basic_api_url = str(config.get(CONFIG_KEY_RAG_BASIC_API_URL, legacy_rag_api_url) or "").strip()
+    legacy_basic_model_id = str(config.get(CONFIG_KEY_RAG_BASIC_MODEL_ID, legacy_rag_model_id) or "").strip()
+    legacy_basic_api_key = str(config.get(CONFIG_KEY_RAG_BASIC_API_KEY, legacy_rag_api_key) or "").strip()
+    legacy_reasoning_api_url = str(config.get(CONFIG_KEY_RAG_REASONING_API_URL, legacy_rag_api_url) or "").strip()
+    legacy_reasoning_model_id = str(config.get(CONFIG_KEY_RAG_REASONING_MODEL_ID, legacy_rag_model_id) or "").strip()
+    legacy_reasoning_api_key = str(config.get(CONFIG_KEY_RAG_REASONING_API_KEY, legacy_rag_api_key) or "").strip()
+    legacy_show_reasoning = _coerce_bool_config(
+        config.get(CONFIG_KEY_DEEP_ASK_SHOW_REASONING),
+        DEFAULT_SHOW_REASONING_TRACE,
+    )
     return AiSettings(
-        rag_basic_api_url=str(config.get(CONFIG_KEY_RAG_BASIC_API_URL, legacy_rag_api_url) or "").strip(),
-        rag_basic_model_id=str(config.get(CONFIG_KEY_RAG_BASIC_MODEL_ID, legacy_rag_model_id) or "").strip(),
-        rag_basic_api_key=str(config.get(CONFIG_KEY_RAG_BASIC_API_KEY, legacy_rag_api_key) or "").strip(),
-        rag_reasoning_api_url=str(
-            config.get(CONFIG_KEY_RAG_REASONING_API_URL, legacy_rag_api_url) or ""
+        rag_no_citations_api_url=str(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_URL, legacy_basic_api_url) or ""
         ).strip(),
-        rag_reasoning_model_id=str(
-            config.get(CONFIG_KEY_RAG_REASONING_MODEL_ID, legacy_rag_model_id) or ""
+        rag_no_citations_model_id=str(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID, legacy_basic_model_id) or ""
         ).strip(),
-        rag_reasoning_api_key=str(
-            config.get(CONFIG_KEY_RAG_REASONING_API_KEY, legacy_rag_api_key) or ""
+        rag_no_citations_api_key=str(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_KEY, legacy_basic_api_key) or ""
         ).strip(),
+        rag_no_citations_kimi_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_KIMI_REASONING),
+            DEFAULT_KIMI_REASONING_ENABLED,
+        ),
+        rag_no_citations_deepseek_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING),
+            DEFAULT_DEEPSEEK_REASONING_ENABLED,
+        ),
+        rag_no_citations_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE),
+            legacy_show_reasoning,
+        ),
+        rag_full_citations_api_url=str(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_URL, legacy_reasoning_api_url) or ""
+        ).strip(),
+        rag_full_citations_model_id=str(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID, legacy_reasoning_model_id) or ""
+        ).strip(),
+        rag_full_citations_api_key=str(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY, legacy_reasoning_api_key) or ""
+        ).strip(),
+        rag_full_citations_kimi_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_KIMI_REASONING),
+            DEFAULT_KIMI_REASONING_ENABLED,
+        ),
+        rag_full_citations_deepseek_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_DEEPSEEK_REASONING),
+            DEFAULT_DEEPSEEK_REASONING_ENABLED,
+        ),
+        rag_full_citations_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE),
+            legacy_show_reasoning,
+        ),
+        rag_statutes_only_api_url=str(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_URL, legacy_reasoning_api_url) or ""
+        ).strip(),
+        rag_statutes_only_model_id=str(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID, legacy_reasoning_model_id) or ""
+        ).strip(),
+        rag_statutes_only_api_key=str(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY, legacy_reasoning_api_key) or ""
+        ).strip(),
+        rag_statutes_only_kimi_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_KIMI_REASONING),
+            DEFAULT_KIMI_REASONING_ENABLED,
+        ),
+        rag_statutes_only_deepseek_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_DEEPSEEK_REASONING),
+            DEFAULT_DEEPSEEK_REASONING_ENABLED,
+        ),
+        rag_statutes_only_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE),
+            legacy_show_reasoning,
+        ),
         rag_prompt_no_citations=str(
             config.get(CONFIG_KEY_RAG_PROMPT_NO_CITATIONS, legacy_prompt) or legacy_prompt
         ).strip(),
@@ -371,22 +497,40 @@ def load_ai_settings() -> AiSettings:
             config.get(CONFIG_KEY_RAG_ISAACUS_MODEL, DEFAULT_RAG_ISAACUS_MODEL) or DEFAULT_RAG_ISAACUS_MODEL
         ).strip(),
         deep_ask_timeout_seconds=deep_ask_timeout_seconds,
-        deep_ask_show_reasoning=deep_ask_show_reasoning,
     )
 
 
 def save_ai_settings(settings: AiSettings) -> None:
     config = _read_config()
-    config[CONFIG_KEY_RAG_BASIC_API_URL] = settings.rag_basic_api_url
-    config[CONFIG_KEY_RAG_BASIC_MODEL_ID] = settings.rag_basic_model_id
-    config[CONFIG_KEY_RAG_BASIC_API_KEY] = settings.rag_basic_api_key
-    config[CONFIG_KEY_RAG_REASONING_API_URL] = settings.rag_reasoning_api_url
-    config[CONFIG_KEY_RAG_REASONING_MODEL_ID] = settings.rag_reasoning_model_id
-    config[CONFIG_KEY_RAG_REASONING_API_KEY] = settings.rag_reasoning_api_key
+    config[CONFIG_KEY_RAG_NO_CITATIONS_API_URL] = settings.rag_no_citations_api_url
+    config[CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID] = settings.rag_no_citations_model_id
+    config[CONFIG_KEY_RAG_NO_CITATIONS_API_KEY] = settings.rag_no_citations_api_key
+    config[CONFIG_KEY_RAG_NO_CITATIONS_KIMI_REASONING] = bool(settings.rag_no_citations_kimi_reasoning)
+    config[CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING] = bool(settings.rag_no_citations_deepseek_reasoning)
+    config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = bool(settings.rag_no_citations_show_reasoning_trace)
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_API_URL] = settings.rag_full_citations_api_url
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID] = settings.rag_full_citations_model_id
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY] = settings.rag_full_citations_api_key
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_KIMI_REASONING] = bool(settings.rag_full_citations_kimi_reasoning)
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_DEEPSEEK_REASONING] = bool(settings.rag_full_citations_deepseek_reasoning)
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE] = bool(settings.rag_full_citations_show_reasoning_trace)
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_API_URL] = settings.rag_statutes_only_api_url
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID] = settings.rag_statutes_only_model_id
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY] = settings.rag_statutes_only_api_key
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_KIMI_REASONING] = bool(settings.rag_statutes_only_kimi_reasoning)
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_DEEPSEEK_REASONING] = bool(settings.rag_statutes_only_deepseek_reasoning)
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE] = bool(settings.rag_statutes_only_show_reasoning_trace)
+    # Keep legacy grouped keys in sync for backward compatibility with older app versions.
+    config[CONFIG_KEY_RAG_BASIC_API_URL] = settings.rag_no_citations_api_url
+    config[CONFIG_KEY_RAG_BASIC_MODEL_ID] = settings.rag_no_citations_model_id
+    config[CONFIG_KEY_RAG_BASIC_API_KEY] = settings.rag_no_citations_api_key
+    config[CONFIG_KEY_RAG_REASONING_API_URL] = settings.rag_full_citations_api_url
+    config[CONFIG_KEY_RAG_REASONING_MODEL_ID] = settings.rag_full_citations_model_id
+    config[CONFIG_KEY_RAG_REASONING_API_KEY] = settings.rag_full_citations_api_key
     # Keep legacy keys in sync for backward compatibility with older app versions.
-    config[CONFIG_KEY_RAG_API_URL] = settings.rag_basic_api_url
-    config[CONFIG_KEY_RAG_MODEL_ID] = settings.rag_basic_model_id
-    config[CONFIG_KEY_RAG_API_KEY] = settings.rag_basic_api_key
+    config[CONFIG_KEY_RAG_API_URL] = settings.rag_no_citations_api_url
+    config[CONFIG_KEY_RAG_MODEL_ID] = settings.rag_no_citations_model_id
+    config[CONFIG_KEY_RAG_API_KEY] = settings.rag_no_citations_api_key
     config[CONFIG_KEY_RAG_PROMPT_NO_CITATIONS] = settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
     config[CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS] = (
         settings.rag_prompt_full_citations or DEFAULT_RAG_PROMPT_FULL_CITATIONS
@@ -407,7 +551,8 @@ def save_ai_settings(settings: AiSettings) -> None:
         settings.deep_ask_timeout_seconds,
         DEFAULT_STREAM_TIMEOUT_SECONDS,
     )
-    config[CONFIG_KEY_DEEP_ASK_SHOW_REASONING] = bool(settings.deep_ask_show_reasoning)
+    # Keep legacy global reasoning trace key synced with no-citations prompt.
+    config[CONFIG_KEY_DEEP_ASK_SHOW_REASONING] = bool(settings.rag_no_citations_show_reasoning_trace)
     _write_config(config)
 
 
@@ -914,18 +1059,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         return prompt or DEFAULT_RAG_PROMPT
 
     def _resolve_rag_llm_settings(self, prompt_kind: str) -> tuple[str, str, str]:
-        settings = self._ai_settings
-        if prompt_kind in {RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY}:
-            return (
-                settings.rag_reasoning_api_url,
-                settings.rag_reasoning_api_key,
-                settings.rag_reasoning_model_id,
-            )
-        return (
-            settings.rag_basic_api_url,
-            settings.rag_basic_api_key,
-            settings.rag_basic_model_id,
-        )
+        return self._ai_settings.llm_settings_for_prompt(prompt_kind)
 
     def _ask_rag_question(self, question: str, prompt_kind: str) -> None:
         if not question:
@@ -946,9 +1080,23 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_cancel_event = cancel_event
         prompt_text = self._resolve_rag_prompt(prompt_kind)
         api_url, api_key, model_id = self._resolve_rag_llm_settings(prompt_kind)
+        kimi_reasoning, deepseek_reasoning, _show_reasoning_trace = self._ai_settings.reasoning_settings_for_prompt(
+            prompt_kind
+        )
         thread = threading.Thread(
             target=self._rag_worker,
-            args=(question, prompt_text, api_url, api_key, model_id, self._ai_settings, cancel_event, generation),
+            args=(
+                question,
+                prompt_text,
+                api_url,
+                api_key,
+                model_id,
+                kimi_reasoning,
+                deepseek_reasoning,
+                self._ai_settings,
+                cancel_event,
+                generation,
+            ),
             daemon=True,
         )
         self._rag_stream_thread = thread
@@ -961,6 +1109,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
         api_url: str,
         api_key: str,
         model_id: str,
+        kimi_reasoning: bool,
+        deepseek_reasoning: bool,
         settings: AiSettings,
         cancel_event: threading.Event | None,
         generation: int,
@@ -976,10 +1126,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 api_key=api_key,
                 model_id=model_id,
                 messages=messages,
+                kimi_reasoning=kimi_reasoning,
+                deepseek_reasoning=deepseek_reasoning,
                 cancel_event=cancel_event,
                 generation=generation,
-                include_reasoning=settings.deep_ask_show_reasoning,
-                request_timeout_seconds=settings.deep_ask_timeout_seconds,
+                include_reasoning=False,
             )
         except Exception as exc:  # noqa: BLE001
             GLib.idle_add(self._on_rag_stream_error, str(exc), generation)
@@ -1179,10 +1330,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
         api_key: str,
         model_id: str,
         messages: list[dict[str, str]],
+        kimi_reasoning: bool,
+        deepseek_reasoning: bool,
         cancel_event: threading.Event | None,
         generation: int,
         include_reasoning: bool = False,
-        request_timeout_seconds: int = DEFAULT_STREAM_TIMEOUT_SECONDS,
     ) -> None:
         headers = {
             "Content-Type": "application/json",
@@ -1195,14 +1347,15 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "messages": messages,
             "stream": True,
         }
+        if _model_looks_deepseek(model_id):
+            body["thinking"] = {"type": "enabled" if deepseek_reasoning else "disabled"}
+        elif _model_looks_kimi(model_id):
+            if not kimi_reasoning:
+                body["thinking"] = {"type": "disabled"}
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(api_url, data=data, headers=headers, method="POST")
         try:
-            timeout_seconds = _coerce_timeout_seconds(
-                request_timeout_seconds,
-                DEFAULT_STREAM_TIMEOUT_SECONDS,
-            )
-            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            with urllib.request.urlopen(req) as resp:
                 for chunk in self._iter_sse_chunks(resp, cancel_event, include_reasoning=include_reasoning):
                     if cancel_event and cancel_event.is_set():
                         GLib.idle_add(self._on_rag_stream_cancelled, generation)
@@ -2102,15 +2255,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self.set_resizable(True)
         self._app = app
         self._parent = parent
-        self._rag_basic_api_url_row: Adw.EntryRow | None = None
-        self._rag_basic_model_row: Adw.EntryRow | None = None
-        self._rag_basic_api_key_row: Adw.EntryRow | None = None
-        self._rag_reasoning_api_url_row: Adw.EntryRow | None = None
-        self._rag_reasoning_model_row: Adw.EntryRow | None = None
-        self._rag_reasoning_api_key_row: Adw.EntryRow | None = None
+        self._llm_api_url_rows: dict[str, Adw.EntryRow] = {}
+        self._llm_model_rows: dict[str, Adw.EntryRow] = {}
+        self._llm_api_key_rows: dict[str, Adw.EntryRow] = {}
+        self._kimi_reasoning_rows: dict[str, Adw.SwitchRow] = {}
+        self._deepseek_reasoning_rows: dict[str, Adw.SwitchRow] = {}
         self._rag_top_k_row: Adw.EntryRow | None = None
-        self._rag_timeout_row: Adw.EntryRow | None = None
-        self._rag_reasoning_row: Adw.SwitchRow | None = None
         self._embeddings_provider_row: Adw.ComboRow | None = None
         self._embeddings_provider_values: list[str] = [RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS]
         self._voyage_model_row: Adw.EntryRow | None = None
@@ -2157,45 +2307,9 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         display_group.add(search_font_size_row)
         self._search_font_size_row = search_font_size_row
 
-        rag_basic_group = Adw.PreferencesGroup(title="Basic RAG LLM (No Citations)")
-        rag_basic_group.add_css_class("list-stack")
-        rag_basic_group.set_hexpand(True)
-        box.append(rag_basic_group)
-
-        rag_basic_api_url = Adw.EntryRow(title="API URL")
-        rag_basic_api_url.set_hexpand(True)
-        rag_basic_group.add(rag_basic_api_url)
-        self._rag_basic_api_url_row = rag_basic_api_url
-
-        rag_basic_model = Adw.EntryRow(title="Model ID")
-        rag_basic_model.set_hexpand(True)
-        rag_basic_group.add(rag_basic_model)
-        self._rag_basic_model_row = rag_basic_model
-
-        rag_basic_api_key = self._build_password_row("API Key")
-        rag_basic_group.add(rag_basic_api_key)
-        self._rag_basic_api_key_row = rag_basic_api_key
-
-        rag_reasoning_group = Adw.PreferencesGroup(
-            title="Reasoning RAG LLM (Full Citations and Statutes/Rules Only)"
-        )
-        rag_reasoning_group.add_css_class("list-stack")
-        rag_reasoning_group.set_hexpand(True)
-        box.append(rag_reasoning_group)
-
-        rag_reasoning_api_url = Adw.EntryRow(title="API URL")
-        rag_reasoning_api_url.set_hexpand(True)
-        rag_reasoning_group.add(rag_reasoning_api_url)
-        self._rag_reasoning_api_url_row = rag_reasoning_api_url
-
-        rag_reasoning_model = Adw.EntryRow(title="Model ID")
-        rag_reasoning_model.set_hexpand(True)
-        rag_reasoning_group.add(rag_reasoning_model)
-        self._rag_reasoning_model_row = rag_reasoning_model
-
-        rag_reasoning_api_key = self._build_password_row("API Key")
-        rag_reasoning_group.add(rag_reasoning_api_key)
-        self._rag_reasoning_api_key_row = rag_reasoning_api_key
+        self._add_llm_settings_group(box, "No Citations LLM", RAG_PROMPT_NO_CITATIONS)
+        self._add_llm_settings_group(box, "Full Citations LLM", RAG_PROMPT_FULL_CITATIONS)
+        self._add_llm_settings_group(box, "Statutes/Rules Only LLM", RAG_PROMPT_STATUTES_ONLY)
 
         rag_runtime_group = Adw.PreferencesGroup(title="RAG Runtime")
         rag_runtime_group.add_css_class("list-stack")
@@ -2206,18 +2320,6 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         rag_top_k.set_hexpand(True)
         rag_runtime_group.add(rag_top_k)
         self._rag_top_k_row = rag_top_k
-
-        rag_timeout = Adw.EntryRow(title="RAG Timeout (seconds)")
-        rag_timeout.set_hexpand(True)
-        rag_runtime_group.add(rag_timeout)
-        self._rag_timeout_row = rag_timeout
-
-        rag_reasoning = Adw.SwitchRow(
-            title="Show Reasoning Trace",
-            subtitle="Display streamed reasoning tokens when emitted by the model.",
-        )
-        rag_runtime_group.add(rag_reasoning)
-        self._rag_reasoning_row = rag_reasoning
 
         embeddings_group = Adw.PreferencesGroup(title="Embeddings")
         embeddings_group.add_css_class("list-stack")
@@ -2316,6 +2418,40 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             row.set_hexpand(True)
         return row
 
+    def _add_llm_settings_group(self, box: Gtk.Box, title: str, prompt_kind: str) -> None:
+        group = Adw.PreferencesGroup(title=title)
+        group.add_css_class("list-stack")
+        group.set_hexpand(True)
+        box.append(group)
+
+        api_url = Adw.EntryRow(title="API URL")
+        api_url.set_hexpand(True)
+        group.add(api_url)
+        self._llm_api_url_rows[prompt_kind] = api_url
+
+        model = Adw.EntryRow(title="Model ID")
+        model.set_hexpand(True)
+        group.add(model)
+        self._llm_model_rows[prompt_kind] = model
+
+        api_key = self._build_password_row("API Key")
+        group.add(api_key)
+        self._llm_api_key_rows[prompt_kind] = api_key
+
+        kimi_reasoning = Adw.SwitchRow(
+            title="Kimi Reasoning",
+            subtitle="Enable reasoning mode for Kimi models.",
+        )
+        group.add(kimi_reasoning)
+        self._kimi_reasoning_rows[prompt_kind] = kimi_reasoning
+
+        deepseek_reasoning = Adw.SwitchRow(
+            title="Deepseek Reasoning",
+            subtitle="Enable thinking mode for Deepseek models.",
+        )
+        group.add(deepseek_reasoning)
+        self._deepseek_reasoning_rows[prompt_kind] = deepseek_reasoning
+
     def _add_prompt_section(self, box: Gtk.Box, title: str, text: str, key: str) -> None:
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         prompt_section.set_hexpand(True)
@@ -2358,24 +2494,23 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
 
     def _load_settings(self) -> None:
         settings = load_ai_settings()
-        if self._rag_basic_api_url_row:
-            self._rag_basic_api_url_row.set_text(settings.rag_basic_api_url)
-        if self._rag_basic_model_row:
-            self._rag_basic_model_row.set_text(settings.rag_basic_model_id)
-        if self._rag_basic_api_key_row:
-            self._rag_basic_api_key_row.set_text(settings.rag_basic_api_key)
-        if self._rag_reasoning_api_url_row:
-            self._rag_reasoning_api_url_row.set_text(settings.rag_reasoning_api_url)
-        if self._rag_reasoning_model_row:
-            self._rag_reasoning_model_row.set_text(settings.rag_reasoning_model_id)
-        if self._rag_reasoning_api_key_row:
-            self._rag_reasoning_api_key_row.set_text(settings.rag_reasoning_api_key)
+        for prompt_kind in (RAG_PROMPT_NO_CITATIONS, RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY):
+            api_url, api_key, model_id = settings.llm_settings_for_prompt(prompt_kind)
+            kimi_reasoning, deepseek_reasoning, _show_reasoning_trace = settings.reasoning_settings_for_prompt(
+                prompt_kind
+            )
+            if prompt_kind in self._llm_api_url_rows:
+                self._llm_api_url_rows[prompt_kind].set_text(api_url)
+            if prompt_kind in self._llm_model_rows:
+                self._llm_model_rows[prompt_kind].set_text(model_id)
+            if prompt_kind in self._llm_api_key_rows:
+                self._llm_api_key_rows[prompt_kind].set_text(api_key)
+            if prompt_kind in self._kimi_reasoning_rows:
+                self._kimi_reasoning_rows[prompt_kind].set_active(bool(kimi_reasoning))
+            if prompt_kind in self._deepseek_reasoning_rows:
+                self._deepseek_reasoning_rows[prompt_kind].set_active(bool(deepseek_reasoning))
         if self._rag_top_k_row:
             self._rag_top_k_row.set_text(str(settings.rag_top_k))
-        if self._rag_timeout_row:
-            self._rag_timeout_row.set_text(str(settings.deep_ask_timeout_seconds))
-        if self._rag_reasoning_row:
-            self._rag_reasoning_row.set_active(bool(settings.deep_ask_show_reasoning))
         if self._embeddings_provider_row:
             provider = _normalize_rag_provider(settings.rag_provider)
             if provider in self._embeddings_provider_values:
@@ -2411,29 +2546,54 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if not all(
             [
-                self._rag_basic_api_url_row,
-                self._rag_basic_model_row,
-                self._rag_basic_api_key_row,
-                self._rag_reasoning_api_url_row,
-                self._rag_reasoning_model_row,
-                self._rag_reasoning_api_key_row,
                 self._embeddings_provider_row,
                 self._voyage_model_row,
                 self._voyage_key_row,
                 self._isaacus_model_row,
                 self._isaacus_key_row,
-                self._rag_timeout_row,
-                self._rag_reasoning_row,
             ]
         ):
             return
+        for prompt_kind in (RAG_PROMPT_NO_CITATIONS, RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY):
+            if (
+                prompt_kind not in self._llm_api_url_rows
+                or prompt_kind not in self._llm_model_rows
+                or prompt_kind not in self._llm_api_key_rows
+                or prompt_kind not in self._kimi_reasoning_rows
+                or prompt_kind not in self._deepseek_reasoning_rows
+            ):
+                return
         settings = AiSettings(
-            rag_basic_api_url=self._rag_basic_api_url_row.get_text().strip(),
-            rag_basic_model_id=self._rag_basic_model_row.get_text().strip(),
-            rag_basic_api_key=self._rag_basic_api_key_row.get_text().strip(),
-            rag_reasoning_api_url=self._rag_reasoning_api_url_row.get_text().strip(),
-            rag_reasoning_model_id=self._rag_reasoning_model_row.get_text().strip(),
-            rag_reasoning_api_key=self._rag_reasoning_api_key_row.get_text().strip(),
+            rag_no_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
+            rag_no_citations_model_id=self._llm_model_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
+            rag_no_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
+            rag_no_citations_kimi_reasoning=bool(
+                self._kimi_reasoning_rows[RAG_PROMPT_NO_CITATIONS].get_active()
+            ),
+            rag_no_citations_deepseek_reasoning=bool(
+                self._deepseek_reasoning_rows[RAG_PROMPT_NO_CITATIONS].get_active()
+            ),
+            rag_no_citations_show_reasoning_trace=False,
+            rag_full_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
+            rag_full_citations_model_id=self._llm_model_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
+            rag_full_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
+            rag_full_citations_kimi_reasoning=bool(
+                self._kimi_reasoning_rows[RAG_PROMPT_FULL_CITATIONS].get_active()
+            ),
+            rag_full_citations_deepseek_reasoning=bool(
+                self._deepseek_reasoning_rows[RAG_PROMPT_FULL_CITATIONS].get_active()
+            ),
+            rag_full_citations_show_reasoning_trace=False,
+            rag_statutes_only_api_url=self._llm_api_url_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
+            rag_statutes_only_model_id=self._llm_model_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
+            rag_statutes_only_api_key=self._llm_api_key_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
+            rag_statutes_only_kimi_reasoning=bool(
+                self._kimi_reasoning_rows[RAG_PROMPT_STATUTES_ONLY].get_active()
+            ),
+            rag_statutes_only_deepseek_reasoning=bool(
+                self._deepseek_reasoning_rows[RAG_PROMPT_STATUTES_ONLY].get_active()
+            ),
+            rag_statutes_only_show_reasoning_trace=False,
             rag_prompt_no_citations=self._prompt_text(
                 RAG_PROMPT_NO_CITATIONS,
                 DEFAULT_RAG_PROMPT,
@@ -2456,7 +2616,6 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             isaacus_api_key=self._isaacus_key_row.get_text().strip(),
             isaacus_model=self._isaacus_model_row.get_text().strip() or DEFAULT_RAG_ISAACUS_MODEL,
             deep_ask_timeout_seconds=DEFAULT_STREAM_TIMEOUT_SECONDS,
-            deep_ask_show_reasoning=bool(self._rag_reasoning_row.get_active()),
         )
         provider_index = int(self._embeddings_provider_row.get_selected())
         if 0 <= provider_index < len(self._embeddings_provider_values):
@@ -2469,11 +2628,6 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 settings.rag_top_k = _clamp_rag_top_k(int(raw_top_k))
             except (TypeError, ValueError):
                 settings.rag_top_k = DEFAULT_RAG_TOP_K
-        if self._rag_timeout_row:
-            settings.deep_ask_timeout_seconds = _coerce_timeout_seconds(
-                self._rag_timeout_row.get_text().strip(),
-                DEFAULT_STREAM_TIMEOUT_SECONDS,
-            )
         save_ai_settings(settings)
         self._parent._ai_settings = settings
         self._parent._kickoff_rag_background_load()
