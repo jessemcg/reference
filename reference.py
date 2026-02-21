@@ -52,6 +52,14 @@ CONFIG_KEY_RAG_NO_CITATIONS_API_KEY = "rag_no_citations_api_key"
 CONFIG_KEY_RAG_NO_CITATIONS_KIMI_REASONING = "rag_no_citations_kimi_reasoning"
 CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING = "rag_no_citations_deepseek_reasoning"
 CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE = "rag_no_citations_show_reasoning_trace"
+CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL = "rag_no_citations_with_reasoning_api_url"
+CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID = "rag_no_citations_with_reasoning_model_id"
+CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY = "rag_no_citations_with_reasoning_api_key"
+CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_KIMI_REASONING = "rag_no_citations_with_reasoning_kimi_reasoning"
+CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_DEEPSEEK_REASONING = "rag_no_citations_with_reasoning_deepseek_reasoning"
+CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE = (
+    "rag_no_citations_with_reasoning_show_reasoning_trace"
+)
 CONFIG_KEY_RAG_FULL_CITATIONS_API_URL = "rag_full_citations_api_url"
 CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID = "rag_full_citations_model_id"
 CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY = "rag_full_citations_api_key"
@@ -116,6 +124,7 @@ BRIEF_TEXT_FONT_FAMILY = (
     '"Century Schoolbook L", "URW Schoolbook L", serif'
 )
 RAG_PROMPT_NO_CITATIONS = "no_citations"
+RAG_PROMPT_NO_CITATIONS_WITH_REASONING = "no_citations_with_reasoning"
 RAG_PROMPT_FULL_CITATIONS = "full_citations"
 RAG_PROMPT_STATUTES_ONLY = "statutes_only"
 RAG_PROVIDER_VOYAGE = "voyage"
@@ -277,6 +286,12 @@ class AiSettings:
     rag_no_citations_kimi_reasoning: bool
     rag_no_citations_deepseek_reasoning: bool
     rag_no_citations_show_reasoning_trace: bool
+    rag_no_citations_with_reasoning_api_url: str
+    rag_no_citations_with_reasoning_model_id: str
+    rag_no_citations_with_reasoning_api_key: str
+    rag_no_citations_with_reasoning_kimi_reasoning: bool
+    rag_no_citations_with_reasoning_deepseek_reasoning: bool
+    rag_no_citations_with_reasoning_show_reasoning_trace: bool
     rag_full_citations_api_url: str
     rag_full_citations_model_id: str
     rag_full_citations_api_key: str
@@ -312,6 +327,12 @@ class AiSettings:
         )
 
     def llm_settings_for_prompt(self, prompt_kind: str) -> tuple[str, str, str]:
+        if prompt_kind == RAG_PROMPT_NO_CITATIONS_WITH_REASONING:
+            return (
+                self.rag_no_citations_with_reasoning_api_url,
+                self.rag_no_citations_with_reasoning_api_key,
+                self.rag_no_citations_with_reasoning_model_id,
+            )
         if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
             return (
                 self.rag_full_citations_api_url,
@@ -331,6 +352,12 @@ class AiSettings:
         )
 
     def reasoning_settings_for_prompt(self, prompt_kind: str) -> tuple[bool, bool, bool]:
+        if prompt_kind == RAG_PROMPT_NO_CITATIONS_WITH_REASONING:
+            return (
+                self.rag_no_citations_with_reasoning_kimi_reasoning,
+                self.rag_no_citations_with_reasoning_deepseek_reasoning,
+                self.rag_no_citations_with_reasoning_show_reasoning_trace,
+            )
         if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
             return (
                 self.rag_full_citations_kimi_reasoning,
@@ -429,6 +456,27 @@ def load_ai_settings() -> AiSettings:
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE),
             legacy_show_reasoning,
         ),
+        rag_no_citations_with_reasoning_api_url=str(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL, legacy_reasoning_api_url) or ""
+        ).strip(),
+        rag_no_citations_with_reasoning_model_id=str(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID, legacy_reasoning_model_id) or ""
+        ).strip(),
+        rag_no_citations_with_reasoning_api_key=str(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY, legacy_reasoning_api_key) or ""
+        ).strip(),
+        rag_no_citations_with_reasoning_kimi_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_KIMI_REASONING),
+            DEFAULT_KIMI_REASONING_ENABLED,
+        ),
+        rag_no_citations_with_reasoning_deepseek_reasoning=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_DEEPSEEK_REASONING),
+            DEFAULT_DEEPSEEK_REASONING_ENABLED,
+        ),
+        rag_no_citations_with_reasoning_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE),
+            legacy_show_reasoning,
+        ),
         rag_full_citations_api_url=str(
             config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -508,6 +556,18 @@ def save_ai_settings(settings: AiSettings) -> None:
     config[CONFIG_KEY_RAG_NO_CITATIONS_KIMI_REASONING] = bool(settings.rag_no_citations_kimi_reasoning)
     config[CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING] = bool(settings.rag_no_citations_deepseek_reasoning)
     config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = bool(settings.rag_no_citations_show_reasoning_trace)
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL] = settings.rag_no_citations_with_reasoning_api_url
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID] = settings.rag_no_citations_with_reasoning_model_id
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY] = settings.rag_no_citations_with_reasoning_api_key
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_KIMI_REASONING] = bool(
+        settings.rag_no_citations_with_reasoning_kimi_reasoning
+    )
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_DEEPSEEK_REASONING] = bool(
+        settings.rag_no_citations_with_reasoning_deepseek_reasoning
+    )
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE] = bool(
+        settings.rag_no_citations_with_reasoning_show_reasoning_trace
+    )
     config[CONFIG_KEY_RAG_FULL_CITATIONS_API_URL] = settings.rag_full_citations_api_url
     config[CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID] = settings.rag_full_citations_model_id
     config[CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY] = settings.rag_full_citations_api_key
@@ -738,6 +798,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_entry: Gtk.Entry | None = None
         self._search_entry: Gtk.SearchEntry | None = None
         self._rag_no_citations_button: Gtk.Button | None = None
+        self._rag_no_citations_with_reasoning_button: Gtk.Button | None = None
         self._rag_full_citations_button: Gtk.Button | None = None
         self._rag_statutes_only_button: Gtk.Button | None = None
         self._search_button: Gtk.Button | None = None
@@ -799,6 +860,17 @@ class ReferenceWindow(Adw.ApplicationWindow):
         no_citations_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_NO_CITATIONS)
         rag_buttons.append(no_citations_button)
         self._rag_no_citations_button = no_citations_button
+
+        no_citations_with_reasoning_button = Gtk.Button(label="No Citations with Reasoninng")
+        no_citations_with_reasoning_button.add_css_class("flat")
+        no_citations_with_reasoning_button.add_css_class("no-bold")
+        no_citations_with_reasoning_button.connect(
+            "clicked",
+            self._on_rag_question_clicked,
+            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
+        )
+        rag_buttons.append(no_citations_with_reasoning_button)
+        self._rag_no_citations_with_reasoning_button = no_citations_with_reasoning_button
 
         full_citations_button = Gtk.Button(label="Full Citations")
         full_citations_button.add_css_class("flat")
@@ -2308,6 +2380,11 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._search_font_size_row = search_font_size_row
 
         self._add_llm_settings_group(box, "No Citations LLM", RAG_PROMPT_NO_CITATIONS)
+        self._add_llm_settings_group(
+            box,
+            "No Citations with Reasoninng LLM",
+            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
+        )
         self._add_llm_settings_group(box, "Full Citations LLM", RAG_PROMPT_FULL_CITATIONS)
         self._add_llm_settings_group(box, "Statutes/Rules Only LLM", RAG_PROMPT_STATUTES_ONLY)
 
@@ -2494,7 +2571,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
 
     def _load_settings(self) -> None:
         settings = load_ai_settings()
-        for prompt_kind in (RAG_PROMPT_NO_CITATIONS, RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY):
+        for prompt_kind in (
+            RAG_PROMPT_NO_CITATIONS,
+            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
+            RAG_PROMPT_FULL_CITATIONS,
+            RAG_PROMPT_STATUTES_ONLY,
+        ):
             api_url, api_key, model_id = settings.llm_settings_for_prompt(prompt_kind)
             kimi_reasoning, deepseek_reasoning, _show_reasoning_trace = settings.reasoning_settings_for_prompt(
                 prompt_kind
@@ -2554,7 +2636,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             ]
         ):
             return
-        for prompt_kind in (RAG_PROMPT_NO_CITATIONS, RAG_PROMPT_FULL_CITATIONS, RAG_PROMPT_STATUTES_ONLY):
+        for prompt_kind in (
+            RAG_PROMPT_NO_CITATIONS,
+            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
+            RAG_PROMPT_FULL_CITATIONS,
+            RAG_PROMPT_STATUTES_ONLY,
+        ):
             if (
                 prompt_kind not in self._llm_api_url_rows
                 or prompt_kind not in self._llm_model_rows
@@ -2574,6 +2661,22 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 self._deepseek_reasoning_rows[RAG_PROMPT_NO_CITATIONS].get_active()
             ),
             rag_no_citations_show_reasoning_trace=False,
+            rag_no_citations_with_reasoning_api_url=self._llm_api_url_rows[
+                RAG_PROMPT_NO_CITATIONS_WITH_REASONING
+            ].get_text().strip(),
+            rag_no_citations_with_reasoning_model_id=self._llm_model_rows[
+                RAG_PROMPT_NO_CITATIONS_WITH_REASONING
+            ].get_text().strip(),
+            rag_no_citations_with_reasoning_api_key=self._llm_api_key_rows[
+                RAG_PROMPT_NO_CITATIONS_WITH_REASONING
+            ].get_text().strip(),
+            rag_no_citations_with_reasoning_kimi_reasoning=bool(
+                self._kimi_reasoning_rows[RAG_PROMPT_NO_CITATIONS_WITH_REASONING].get_active()
+            ),
+            rag_no_citations_with_reasoning_deepseek_reasoning=bool(
+                self._deepseek_reasoning_rows[RAG_PROMPT_NO_CITATIONS_WITH_REASONING].get_active()
+            ),
+            rag_no_citations_with_reasoning_show_reasoning_trace=False,
             rag_full_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
             rag_full_citations_model_id=self._llm_model_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
             rag_full_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
