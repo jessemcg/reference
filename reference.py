@@ -136,9 +136,16 @@ DEFAULT_STREAM_TIMEOUT_SECONDS = 300
 DEFAULT_SHOW_REASONING_TRACE = False
 DEFAULT_KIMI_REASONING_ENABLED = True
 DEFAULT_DEEPSEEK_REASONING_ENABLED = True
+PROMPT_EDITOR_MIN_HEIGHT = 220
 
 AI_LINK_SPAN_RE = re.compile(r'(?:\"|“)(.+?)(?:\"|”)|\*\*(.+?)\*\*', re.DOTALL)
+MARKDOWN_EMPHASIS_RE = re.compile(r"\*\*(?!\s)([^*\n]+?)\*\*|\*(?!\s)([^*\n]+?)\*")
 LINK_TRAILING_PUNCTUATION = ",.;:!?)]"
+MARKDOWN_HEADING_SCALES = {
+    1: 1.55,
+    2: 1.3,
+    3: 1.15,
+}
 
 
 def _read_config() -> dict[str, Any]:
@@ -173,6 +180,110 @@ def split_link_phrase(phrase: str) -> tuple[str, str]:
 def _normalize_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text.rstrip()
+
+
+def _render_markdown_text(text: str) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+    spans: list[tuple[int, int, str]] = []
+    if not text:
+        return "", spans, [0]
+
+    out: list[str] = []
+    orig_to_clean = [0] * (len(text) + 1)
+    clean_index = 0
+    pos = 0
+
+    def _process_emphasis(
+        segment: str,
+        base_offset: int,
+    ) -> tuple[str, list[tuple[int, int, str]], list[int]]:
+        segment_spans: list[tuple[int, int, str]] = []
+        segment_out: list[str] = []
+        segment_map = [0] * (len(segment) + 1)
+        seg_orig = 0
+        seg_clean = 0
+
+        for match in MARKDOWN_EMPHASIS_RE.finditer(segment):
+            start, end = match.span()
+            for idx in range(seg_orig, start):
+                segment_map[idx] = seg_clean
+                segment_out.append(segment[idx])
+                seg_clean += 1
+            segment_map[start] = seg_clean
+
+            if match.group(1) is not None:
+                content_start = start + 2
+                content_end = end - 2
+                kind = "bold"
+            else:
+                content_start = start + 1
+                content_end = end - 1
+                kind = "italic"
+
+            for idx in range(start, content_start):
+                segment_map[idx] = seg_clean
+            span_start = seg_clean
+            for idx in range(content_start, content_end):
+                segment_map[idx] = seg_clean
+                segment_out.append(segment[idx])
+                seg_clean += 1
+            span_end = seg_clean
+            if span_end > span_start:
+                segment_spans.append((span_start + base_offset, span_end + base_offset, kind))
+            for idx in range(content_end, end):
+                segment_map[idx] = seg_clean
+            seg_orig = end
+
+        for idx in range(seg_orig, len(segment)):
+            segment_map[idx] = seg_clean
+            segment_out.append(segment[idx])
+            seg_clean += 1
+        segment_map[len(segment)] = seg_clean
+        return "".join(segment_out), segment_spans, segment_map
+
+    for line in text.splitlines(keepends=True):
+        line_start = pos
+        line_end = pos + len(line)
+        has_newline = line.endswith("\n")
+        content = line[:-1] if has_newline else line
+
+        prefix_len = 0
+        heading_level = 0
+        if content.startswith("# "):
+            prefix_len = 2
+            heading_level = 1
+        elif content.startswith("## "):
+            prefix_len = 3
+            heading_level = 2
+        elif content.startswith("### "):
+            prefix_len = 4
+            heading_level = 3
+
+        for idx in range(line_start, line_start + prefix_len):
+            orig_to_clean[idx] = clean_index
+
+        content_start = line_start + prefix_len
+        content_end = line_start + len(content)
+        line_content = text[content_start:content_end]
+        line_out, line_spans, line_map = _process_emphasis(line_content, clean_index)
+        out.append(line_out)
+        for idx in range(len(line_content) + 1):
+            orig_to_clean[content_start + idx] = line_map[idx] + clean_index
+        if heading_level and line_out:
+            spans.append((clean_index, clean_index + len(line_out), f"heading{heading_level}"))
+        spans.extend(line_spans)
+        clean_index += len(line_out)
+
+        if has_newline:
+            newline_orig = line_start + len(content)
+            orig_to_clean[newline_orig] = clean_index
+            out.append(line[-1])
+            clean_index += 1
+            orig_to_clean[line_end] = clean_index
+
+        pos = line_end
+
+    orig_to_clean[len(text)] = clean_index
+    return "".join(out), spans, orig_to_clean
 
 
 def _normalize_rag_provider(value: str) -> str:
@@ -356,24 +467,24 @@ class AiSettings:
             return (
                 self.rag_no_citations_with_reasoning_kimi_reasoning,
                 self.rag_no_citations_with_reasoning_deepseek_reasoning,
-                self.rag_no_citations_with_reasoning_show_reasoning_trace,
+                False,
             )
         if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
             return (
                 self.rag_full_citations_kimi_reasoning,
                 self.rag_full_citations_deepseek_reasoning,
-                self.rag_full_citations_show_reasoning_trace,
+                False,
             )
         if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
             return (
                 self.rag_statutes_only_kimi_reasoning,
                 self.rag_statutes_only_deepseek_reasoning,
-                self.rag_statutes_only_show_reasoning_trace,
+                False,
             )
         return (
             self.rag_no_citations_kimi_reasoning,
             self.rag_no_citations_deepseek_reasoning,
-            self.rag_no_citations_show_reasoning_trace,
+            False,
         )
 
     def is_rag_ready_for_prompt(self, prompt_kind: str) -> bool:
@@ -417,10 +528,7 @@ def load_ai_settings() -> AiSettings:
         )
         or DEFAULT_RAG_VOYAGE_MODEL
     ).strip()
-    deep_ask_timeout_seconds = _coerce_timeout_seconds(
-        config.get(CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS),
-        DEFAULT_STREAM_TIMEOUT_SECONDS,
-    )
+    deep_ask_timeout_seconds = 0
     legacy_rag_api_url = str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip()
     legacy_rag_model_id = str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip()
     legacy_rag_api_key = str(config.get(CONFIG_KEY_RAG_API_KEY, "") or "").strip()
@@ -452,10 +560,7 @@ def load_ai_settings() -> AiSettings:
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING),
             DEFAULT_DEEPSEEK_REASONING_ENABLED,
         ),
-        rag_no_citations_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE),
-            legacy_show_reasoning,
-        ),
+        rag_no_citations_show_reasoning_trace=False,
         rag_no_citations_with_reasoning_api_url=str(
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -473,10 +578,7 @@ def load_ai_settings() -> AiSettings:
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_DEEPSEEK_REASONING),
             DEFAULT_DEEPSEEK_REASONING_ENABLED,
         ),
-        rag_no_citations_with_reasoning_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE),
-            legacy_show_reasoning,
-        ),
+        rag_no_citations_with_reasoning_show_reasoning_trace=False,
         rag_full_citations_api_url=str(
             config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -494,10 +596,7 @@ def load_ai_settings() -> AiSettings:
             config.get(CONFIG_KEY_RAG_FULL_CITATIONS_DEEPSEEK_REASONING),
             DEFAULT_DEEPSEEK_REASONING_ENABLED,
         ),
-        rag_full_citations_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE),
-            legacy_show_reasoning,
-        ),
+        rag_full_citations_show_reasoning_trace=False,
         rag_statutes_only_api_url=str(
             config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -515,10 +614,7 @@ def load_ai_settings() -> AiSettings:
             config.get(CONFIG_KEY_RAG_STATUTES_ONLY_DEEPSEEK_REASONING),
             DEFAULT_DEEPSEEK_REASONING_ENABLED,
         ),
-        rag_statutes_only_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE),
-            legacy_show_reasoning,
-        ),
+        rag_statutes_only_show_reasoning_trace=False,
         rag_prompt_no_citations=str(
             config.get(CONFIG_KEY_RAG_PROMPT_NO_CITATIONS, legacy_prompt) or legacy_prompt
         ).strip(),
@@ -555,7 +651,7 @@ def save_ai_settings(settings: AiSettings) -> None:
     config[CONFIG_KEY_RAG_NO_CITATIONS_API_KEY] = settings.rag_no_citations_api_key
     config[CONFIG_KEY_RAG_NO_CITATIONS_KIMI_REASONING] = bool(settings.rag_no_citations_kimi_reasoning)
     config[CONFIG_KEY_RAG_NO_CITATIONS_DEEPSEEK_REASONING] = bool(settings.rag_no_citations_deepseek_reasoning)
-    config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = bool(settings.rag_no_citations_show_reasoning_trace)
+    config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = False
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL] = settings.rag_no_citations_with_reasoning_api_url
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID] = settings.rag_no_citations_with_reasoning_model_id
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY] = settings.rag_no_citations_with_reasoning_api_key
@@ -565,21 +661,19 @@ def save_ai_settings(settings: AiSettings) -> None:
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_DEEPSEEK_REASONING] = bool(
         settings.rag_no_citations_with_reasoning_deepseek_reasoning
     )
-    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE] = bool(
-        settings.rag_no_citations_with_reasoning_show_reasoning_trace
-    )
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE] = False
     config[CONFIG_KEY_RAG_FULL_CITATIONS_API_URL] = settings.rag_full_citations_api_url
     config[CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID] = settings.rag_full_citations_model_id
     config[CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY] = settings.rag_full_citations_api_key
     config[CONFIG_KEY_RAG_FULL_CITATIONS_KIMI_REASONING] = bool(settings.rag_full_citations_kimi_reasoning)
     config[CONFIG_KEY_RAG_FULL_CITATIONS_DEEPSEEK_REASONING] = bool(settings.rag_full_citations_deepseek_reasoning)
-    config[CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE] = bool(settings.rag_full_citations_show_reasoning_trace)
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE] = False
     config[CONFIG_KEY_RAG_STATUTES_ONLY_API_URL] = settings.rag_statutes_only_api_url
     config[CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID] = settings.rag_statutes_only_model_id
     config[CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY] = settings.rag_statutes_only_api_key
     config[CONFIG_KEY_RAG_STATUTES_ONLY_KIMI_REASONING] = bool(settings.rag_statutes_only_kimi_reasoning)
     config[CONFIG_KEY_RAG_STATUTES_ONLY_DEEPSEEK_REASONING] = bool(settings.rag_statutes_only_deepseek_reasoning)
-    config[CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE] = bool(settings.rag_statutes_only_show_reasoning_trace)
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE] = False
     # Keep legacy grouped keys in sync for backward compatibility with older app versions.
     config[CONFIG_KEY_RAG_BASIC_API_URL] = settings.rag_no_citations_api_url
     config[CONFIG_KEY_RAG_BASIC_MODEL_ID] = settings.rag_no_citations_model_id
@@ -607,12 +701,9 @@ def save_ai_settings(settings: AiSettings) -> None:
     config[CONFIG_KEY_RAG_VOYAGE_MODEL] = settings.voyage_model or DEFAULT_RAG_VOYAGE_MODEL
     config[CONFIG_KEY_RAG_ISAACUS_API_KEY] = settings.isaacus_api_key
     config[CONFIG_KEY_RAG_ISAACUS_MODEL] = settings.isaacus_model or DEFAULT_RAG_ISAACUS_MODEL
-    config[CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS] = _coerce_timeout_seconds(
-        settings.deep_ask_timeout_seconds,
-        DEFAULT_STREAM_TIMEOUT_SECONDS,
-    )
+    config[CONFIG_KEY_DEEP_ASK_TIMEOUT_SECONDS] = 0
     # Keep legacy global reasoning trace key synced with no-citations prompt.
-    config[CONFIG_KEY_DEEP_ASK_SHOW_REASONING] = bool(settings.rag_no_citations_show_reasoning_trace)
+    config[CONFIG_KEY_DEEP_ASK_SHOW_REASONING] = False
     _write_config(config)
 
 
@@ -2027,10 +2118,16 @@ class ReferenceWindow(Adw.ApplicationWindow):
         link_lookup.clear()
 
         rendered_text, spans = self._extract_ai_link_spans(text)
+        rendered_text, markdown_spans, orig_to_clean = _render_markdown_text(rendered_text)
         buffer.set_text(rendered_text)
+        self._apply_markdown_spans(buffer, markdown_spans)
 
         quote_color = self._resolve_rag_quote_color(view)
         for start, end, phrase in spans:
+            if end <= start:
+                continue
+            start = self._map_markdown_offset(start, orig_to_clean)
+            end = self._map_markdown_offset(end, orig_to_clean)
             if end <= start:
                 continue
             start_iter = buffer.get_iter_at_offset(start)
@@ -2045,6 +2142,55 @@ class ReferenceWindow(Adw.ApplicationWindow):
             link_tags.append(tag)
         if scroller:
             scroller.queue_resize()
+
+    def _apply_markdown_spans(
+        self,
+        buf: Gtk.TextBuffer,
+        spans: list[tuple[int, int, str]],
+        base_offset: int = 0,
+    ) -> None:
+        if not spans:
+            return
+        table = buf.get_tag_table()
+        if table is None:
+            return
+
+        def ensure_tag(name: str, **props: object) -> Gtk.TextTag:
+            tag = table.lookup(name)
+            if tag is None:
+                tag = buf.create_tag(name, **props)
+            return tag
+
+        bold_tag = ensure_tag("md-bold", weight=Pango.Weight.BOLD)
+        italic_tag = ensure_tag("md-italic", style=Pango.Style.ITALIC)
+        heading_tags: dict[str, Gtk.TextTag] = {}
+        for level, scale in MARKDOWN_HEADING_SCALES.items():
+            heading_tags[f"heading{level}"] = ensure_tag(
+                f"md-h{level}",
+                weight=Pango.Weight.BOLD,
+                scale=scale,
+            )
+
+        for start, end, kind in spans:
+            if end <= start:
+                continue
+            start_iter = buf.get_iter_at_offset(start + base_offset)
+            end_iter = buf.get_iter_at_offset(end + base_offset)
+            if kind == "bold":
+                buf.apply_tag(bold_tag, start_iter, end_iter)
+            elif kind == "italic":
+                buf.apply_tag(italic_tag, start_iter, end_iter)
+            elif kind.startswith("heading"):
+                tag = heading_tags.get(kind)
+                if tag is not None:
+                    buf.apply_tag(tag, start_iter, end_iter)
+
+    def _map_markdown_offset(self, offset: int, mapping: list[int]) -> int:
+        if offset <= 0:
+            return 0
+        if offset >= len(mapping):
+            return mapping[-1] if mapping else 0
+        return mapping[offset]
 
     def _contrast_text_color(self, color: str) -> str:
         match = re.fullmatch(r"#([0-9a-fA-F]{6})", color.strip())
@@ -2546,6 +2692,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scroller.set_hexpand(True)
         scroller.set_vexpand(True)
+        scroller.set_min_content_height(PROMPT_EDITOR_MIN_HEIGHT)
         scroller.set_has_frame(False)
 
         buffer = Gtk.TextBuffer()
@@ -2718,7 +2865,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             voyage_model=self._voyage_model_row.get_text().strip() or DEFAULT_RAG_VOYAGE_MODEL,
             isaacus_api_key=self._isaacus_key_row.get_text().strip(),
             isaacus_model=self._isaacus_model_row.get_text().strip() or DEFAULT_RAG_ISAACUS_MODEL,
-            deep_ask_timeout_seconds=DEFAULT_STREAM_TIMEOUT_SECONDS,
+            deep_ask_timeout_seconds=0,
         )
         provider_index = int(self._embeddings_provider_row.get_selected())
         if 0 <= provider_index < len(self._embeddings_provider_values):
