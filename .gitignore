@@ -4,3 +4,4 @@
 /reference_data/
 /uv.lock
 /.python-version
+__pycache__/
