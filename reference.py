@@ -80,6 +80,7 @@ CONFIG_KEY_VOYAGE_API_KEY = "voyage_api_key"
 CONFIG_KEY_VOYAGE_MODEL = "voyage_model"
 CONFIG_KEY_RAG_OUTPUT_FONT_SIZE = "rag_output_font_size"
 CONFIG_KEY_SEARCH_OUTPUT_FONT_SIZE = "search_output_font_size"
+CONFIG_KEY_BRIEF_FONT_FAMILY = "brief_font_family"
 
 DEFAULT_RAG_PROMPT = (
     "You are a legal research assistant. Answer the user's question using only the provided context. "
@@ -111,10 +112,19 @@ RAG_OUTPUT_BG_COLOR = "alpha(@window_fg_color, 0.06)"
 SEARCH_OUTPUT_BG_COLOR = "alpha(@window_fg_color, 0.06)"
 BRIEF_TEXT_BG_COLOR = "#ffffff"
 BRIEF_TEXT_FG_COLOR = "#000000"
-BRIEF_TEXT_FONT_FAMILY = (
-    '"Century Schoolbook", "TeX Gyre Schola", "New Century Schoolbook", '
-    '"Century Schoolbook L", "URW Schoolbook L", serif'
+DEFAULT_BRIEF_FONT_FAMILY_CSS = '"Noto Serif", "Liberation Serif", "DejaVu Serif", serif'
+BRIEF_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Noto Serif", '"Noto Serif", "Liberation Serif", "DejaVu Serif", serif'),
+    ("Georgia", 'Georgia, "Times New Roman", "Liberation Serif", serif'),
+    ("Merriweather", '"Merriweather", "Noto Serif", "Liberation Serif", serif'),
+    ("Source Sans 3", '"Source Sans 3", "Noto Sans", "Liberation Sans", sans-serif'),
+    (
+        "Century Schoolbook",
+        '"Century Schoolbook", "TeX Gyre Schola", "New Century Schoolbook", '
+        '"Century Schoolbook L", "URW Schoolbook L", serif',
+    ),
 )
+DEFAULT_BRIEF_FONT_FAMILY_NAME = BRIEF_FONT_FAMILY_OPTIONS[0][0]
 RAG_PROMPT_NO_CITATIONS = "no_citations"
 RAG_PROMPT_NO_CITATIONS_WITH_REASONING = "no_citations_with_reasoning"
 RAG_PROMPT_FULL_CITATIONS = "full_citations"
@@ -660,7 +670,23 @@ def _coerce_bool_config(value: Any, default: bool) -> bool:
     return default
 
 
-def load_ui_settings() -> tuple[int, int]:
+def _normalize_brief_font_family_name(value: Any) -> str:
+    normalized = str(value or "").strip()
+    for name, _css in BRIEF_FONT_FAMILY_OPTIONS:
+        if normalized == name:
+            return name
+    return DEFAULT_BRIEF_FONT_FAMILY_NAME
+
+
+def _brief_font_css_for_name(font_family_name: str) -> str:
+    normalized = _normalize_brief_font_family_name(font_family_name)
+    for name, css in BRIEF_FONT_FAMILY_OPTIONS:
+        if normalized == name:
+            return css
+    return DEFAULT_BRIEF_FONT_FAMILY_CSS
+
+
+def load_ui_settings() -> tuple[int, int, str]:
     config = _read_config()
     raw_rag_size = config.get(CONFIG_KEY_RAG_OUTPUT_FONT_SIZE, DEFAULT_OUTPUT_FONT_SIZE)
     try:
@@ -674,16 +700,24 @@ def load_ui_settings() -> tuple[int, int]:
     except (TypeError, ValueError):
         search_size = DEFAULT_OUTPUT_FONT_SIZE
     search_size = _clamp_font_size(search_size)
-    return rag_size, search_size
+    brief_font_family = _normalize_brief_font_family_name(
+        config.get(CONFIG_KEY_BRIEF_FONT_FAMILY)
+    )
+    return rag_size, search_size, brief_font_family
 
 
 def save_ui_settings(
     rag_font_size: int,
     search_font_size: int,
+    brief_font_family: str | None = None,
 ) -> None:
     config = _read_config()
     config[CONFIG_KEY_RAG_OUTPUT_FONT_SIZE] = int(rag_font_size)
     config[CONFIG_KEY_SEARCH_OUTPUT_FONT_SIZE] = int(search_font_size)
+    if brief_font_family is not None:
+        config[CONFIG_KEY_BRIEF_FONT_FAMILY] = _normalize_brief_font_family_name(
+            brief_font_family
+        )
     _write_config(config)
 
 
@@ -782,6 +816,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         (
             self._rag_output_font_size,
             self._search_output_font_size,
+            self._brief_font_family_name,
         ) = load_ui_settings()
         self._rag_output_state = AiOutputView()
         self._search_output_state = AiOutputView()
@@ -2128,7 +2163,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "textview.search-output { "
             f"color: {BRIEF_TEXT_FG_COLOR};"
             f"background-color: {BRIEF_TEXT_BG_COLOR};"
-            f"font-family: {BRIEF_TEXT_FONT_FAMILY};"
+            f"font-family: {_brief_font_css_for_name(self._brief_font_family_name)};"
             "}"
             "textview.search-output text { "
             f"color: {BRIEF_TEXT_FG_COLOR};"
@@ -2137,7 +2172,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "textview.brief-output { "
             f"color: {BRIEF_TEXT_FG_COLOR};"
             f"background-color: {BRIEF_TEXT_BG_COLOR};"
-            f"font-family: {BRIEF_TEXT_FONT_FAMILY};"
+            f"font-family: {_brief_font_css_for_name(self._brief_font_family_name)};"
             "}"
             "textview.brief-output text { "
             f"color: {BRIEF_TEXT_FG_COLOR};"
@@ -2186,19 +2221,22 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self,
         rag_size: int,
         search_size: int,
+        brief_font_family: str,
     ) -> bool:
         size_changed = (
             rag_size != self._rag_output_font_size
             or search_size != self._search_output_font_size
         )
+        brief_font_changed = brief_font_family != self._brief_font_family_name
         self._rag_output_font_size = rag_size
         self._search_output_font_size = search_size
-        if size_changed:
+        self._brief_font_family_name = brief_font_family
+        if size_changed or brief_font_changed:
             self._refresh_output_colors()
-            self._show_toast("Font size saved. Restart Reference to apply.")
+            self._show_toast("Display settings saved. Restart Reference to apply.")
         else:
             self._apply_ui_settings()
-        return size_changed
+        return size_changed or brief_font_changed
 
     def _prepare_for_font_resize(self) -> None:
         self._stop_rag_stream_if_running()
@@ -2388,6 +2426,8 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._isaacus_key_row: Adw.EntryRow | None = None
         self._font_size_row: Adw.EntryRow | None = None
         self._search_font_size_row: Adw.EntryRow | None = None
+        self._brief_font_family_row: Adw.ComboRow | None = None
+        self._brief_font_family_values: list[str] = []
         self._prompt_buffers: dict[str, Gtk.TextBuffer] = {}
         self._status_label: Gtk.Label | None = None
         self._build_ui()
@@ -2425,6 +2465,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         search_font_size_row.set_hexpand(True)
         display_group.add(search_font_size_row)
         self._search_font_size_row = search_font_size_row
+
+        self._brief_font_family_values = [name for name, _css in BRIEF_FONT_FAMILY_OPTIONS]
+        brief_font_family_row = Adw.ComboRow(title="Prior Briefing Font")
+        brief_font_family_row.set_model(Gtk.StringList.new(self._brief_font_family_values))
+        display_group.add(brief_font_family_row)
+        self._brief_font_family_row = brief_font_family_row
 
         self._add_llm_settings_group(box, "No Citations LLM", RAG_PROMPT_NO_CITATIONS)
         self._add_llm_settings_group(
@@ -2646,11 +2692,18 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             self._prompt_buffers[RAG_PROMPT_STATUTES_ONLY].set_text(
                 settings.rag_prompt_statutes_only or DEFAULT_RAG_PROMPT_STATUTES_ONLY
             )
-        rag_size, search_size = load_ui_settings()
+        rag_size, search_size, brief_font_family = load_ui_settings()
         if self._font_size_row:
             self._font_size_row.set_text(str(rag_size))
         if self._search_font_size_row:
             self._search_font_size_row.set_text(str(search_size))
+        if self._brief_font_family_row:
+            if brief_font_family in self._brief_font_family_values:
+                self._brief_font_family_row.set_selected(
+                    self._brief_font_family_values.index(brief_font_family)
+                )
+            else:
+                self._brief_font_family_row.set_selected(0)
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if not all(
@@ -2749,14 +2802,26 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 search_size = _clamp_font_size(int(raw_size))
             except (TypeError, ValueError):
                 search_size = DEFAULT_OUTPUT_FONT_SIZE
-        save_ui_settings(rag_size, search_size)
+        selected_brief_font_family_index = (
+            int(self._brief_font_family_row.get_selected())
+            if self._brief_font_family_row
+            else -1
+        )
+        if 0 <= selected_brief_font_family_index < len(self._brief_font_family_values):
+            brief_font_family = self._brief_font_family_values[selected_brief_font_family_index]
+        else:
+            brief_font_family = DEFAULT_BRIEF_FONT_FAMILY_NAME
+        save_ui_settings(rag_size, search_size, brief_font_family)
         size_changed = self._parent.apply_saved_ui_settings(
             rag_size,
             search_size,
+            brief_font_family,
         )
         if self._status_label:
             if size_changed:
-                self._status_label.set_text("Settings saved. Restart Reference to apply font size changes.")
+                self._status_label.set_text(
+                    "Settings saved. Restart Reference to apply display changes."
+                )
             else:
                 self._status_label.set_text("Settings saved.")
 
