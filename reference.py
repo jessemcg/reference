@@ -81,6 +81,7 @@ CONFIG_KEY_VOYAGE_MODEL = "voyage_model"
 CONFIG_KEY_RAG_OUTPUT_FONT_SIZE = "rag_output_font_size"
 CONFIG_KEY_SEARCH_OUTPUT_FONT_SIZE = "search_output_font_size"
 CONFIG_KEY_BRIEF_FONT_FAMILY = "brief_font_family"
+CONFIG_KEY_SEARCH_HIGHLIGHT_COLOR = "search_highlight_color"
 
 DEFAULT_RAG_PROMPT = (
     "You are a legal research assistant. Answer the user's question using only the provided context. "
@@ -139,12 +140,37 @@ PROMPT_EDITOR_MIN_HEIGHT = 220
 
 AI_LINK_SPAN_RE = re.compile(r'(?:\"|“)(.+?)(?:\"|”)|\*\*(.+?)\*\*', re.DOTALL)
 MARKDOWN_EMPHASIS_RE = re.compile(r"\*\*(?!\s)([^*\n]+?)\*\*|\*(?!\s)([^*\n]+?)\*")
-LINK_TRAILING_PUNCTUATION = ",.;:!?)]"
+LINK_LEADING_PUNCTUATION = "\"'“‘([{"
+LINK_TRAILING_PUNCTUATION = ",.;:!?)]\"'”’}"
 MARKDOWN_HEADING_SCALES = {
     1: 1.55,
     2: 1.3,
     3: 1.15,
 }
+
+
+def _model_looks_kimi(model_id: str) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return "kimi" in normalized or "moonshot" in normalized
+
+
+def _model_looks_deepseek(model_id: str) -> bool:
+    normalized = (model_id or "").strip().lower()
+    return "deepseek" in normalized
+
+
+def _apply_disable_reasoning_to_body(
+    body: dict[str, Any],
+    *,
+    model_id: str,
+    disable_reasoning: bool,
+) -> None:
+    if not disable_reasoning:
+        return
+    if _model_looks_deepseek(model_id) or _model_looks_kimi(model_id):
+        body["thinking"] = {"type": "disabled"}
+    else:
+        body["reasoning_effort"] = "none"
 
 
 def _read_config() -> dict[str, Any]:
@@ -167,13 +193,14 @@ def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def split_link_phrase(phrase: str) -> tuple[str, str]:
+def split_link_phrase(phrase: str) -> str:
+    start = 0
     end = len(phrase)
-    while end > 0 and phrase[end - 1] in LINK_TRAILING_PUNCTUATION:
+    while start < end and phrase[start] in LINK_LEADING_PUNCTUATION:
+        start += 1
+    while end > start and phrase[end - 1] in LINK_TRAILING_PUNCTUATION:
         end -= 1
-    core = phrase[:end].rstrip()
-    trailing = phrase[end:]
-    return core, trailing
+    return phrase[start:end].strip()
 
 
 def _normalize_text(text: str) -> str:
@@ -453,6 +480,15 @@ class AiSettings:
             self.rag_no_citations_model_id,
         )
 
+    def disable_reasoning_for_prompt(self, prompt_kind: str) -> bool:
+        if prompt_kind == RAG_PROMPT_NO_CITATIONS_WITH_REASONING:
+            return bool(self.rag_no_citations_with_reasoning_show_reasoning_trace)
+        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
+            return bool(self.rag_full_citations_show_reasoning_trace)
+        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
+            return bool(self.rag_statutes_only_show_reasoning_trace)
+        return bool(self.rag_no_citations_show_reasoning_trace)
+
     def is_rag_ready_for_prompt(self, prompt_kind: str) -> bool:
         api_url, api_key, model_id = self.llm_settings_for_prompt(prompt_kind)
         llm_ready = self._llm_ready(api_url, model_id, api_key)
@@ -504,10 +540,6 @@ def load_ai_settings() -> AiSettings:
     legacy_reasoning_api_url = str(config.get(CONFIG_KEY_RAG_REASONING_API_URL, legacy_rag_api_url) or "").strip()
     legacy_reasoning_model_id = str(config.get(CONFIG_KEY_RAG_REASONING_MODEL_ID, legacy_rag_model_id) or "").strip()
     legacy_reasoning_api_key = str(config.get(CONFIG_KEY_RAG_REASONING_API_KEY, legacy_rag_api_key) or "").strip()
-    legacy_show_reasoning = _coerce_bool_config(
-        config.get(CONFIG_KEY_DEEP_ASK_SHOW_REASONING),
-        DEFAULT_SHOW_REASONING_TRACE,
-    )
     return AiSettings(
         rag_no_citations_api_url=str(
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_URL, legacy_basic_api_url) or ""
@@ -518,7 +550,10 @@ def load_ai_settings() -> AiSettings:
         rag_no_citations_api_key=str(
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_KEY, legacy_basic_api_key) or ""
         ).strip(),
-        rag_no_citations_show_reasoning_trace=False,
+        rag_no_citations_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE),
+            False,
+        ),
         rag_no_citations_with_reasoning_api_url=str(
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -528,7 +563,10 @@ def load_ai_settings() -> AiSettings:
         rag_no_citations_with_reasoning_api_key=str(
             config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY, legacy_reasoning_api_key) or ""
         ).strip(),
-        rag_no_citations_with_reasoning_show_reasoning_trace=False,
+        rag_no_citations_with_reasoning_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE),
+            False,
+        ),
         rag_full_citations_api_url=str(
             config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -538,7 +576,10 @@ def load_ai_settings() -> AiSettings:
         rag_full_citations_api_key=str(
             config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY, legacy_reasoning_api_key) or ""
         ).strip(),
-        rag_full_citations_show_reasoning_trace=False,
+        rag_full_citations_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE),
+            False,
+        ),
         rag_statutes_only_api_url=str(
             config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_URL, legacy_reasoning_api_url) or ""
         ).strip(),
@@ -548,7 +589,10 @@ def load_ai_settings() -> AiSettings:
         rag_statutes_only_api_key=str(
             config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY, legacy_reasoning_api_key) or ""
         ).strip(),
-        rag_statutes_only_show_reasoning_trace=False,
+        rag_statutes_only_show_reasoning_trace=_coerce_bool_config(
+            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE),
+            False,
+        ),
         rag_prompt_no_citations=str(
             config.get(CONFIG_KEY_RAG_PROMPT_NO_CITATIONS, legacy_prompt) or legacy_prompt
         ).strip(),
@@ -583,19 +627,27 @@ def save_ai_settings(settings: AiSettings) -> None:
     config[CONFIG_KEY_RAG_NO_CITATIONS_API_URL] = settings.rag_no_citations_api_url
     config[CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID] = settings.rag_no_citations_model_id
     config[CONFIG_KEY_RAG_NO_CITATIONS_API_KEY] = settings.rag_no_citations_api_key
-    config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = False
+    config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = bool(
+        settings.rag_no_citations_show_reasoning_trace
+    )
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL] = settings.rag_no_citations_with_reasoning_api_url
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID] = settings.rag_no_citations_with_reasoning_model_id
     config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY] = settings.rag_no_citations_with_reasoning_api_key
-    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE] = False
+    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE] = bool(
+        settings.rag_no_citations_with_reasoning_show_reasoning_trace
+    )
     config[CONFIG_KEY_RAG_FULL_CITATIONS_API_URL] = settings.rag_full_citations_api_url
     config[CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID] = settings.rag_full_citations_model_id
     config[CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY] = settings.rag_full_citations_api_key
-    config[CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE] = False
+    config[CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE] = bool(
+        settings.rag_full_citations_show_reasoning_trace
+    )
     config[CONFIG_KEY_RAG_STATUTES_ONLY_API_URL] = settings.rag_statutes_only_api_url
     config[CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID] = settings.rag_statutes_only_model_id
     config[CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY] = settings.rag_statutes_only_api_key
-    config[CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE] = False
+    config[CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE] = bool(
+        settings.rag_statutes_only_show_reasoning_trace
+    )
     # Keep legacy grouped keys in sync for backward compatibility with older app versions.
     config[CONFIG_KEY_RAG_BASIC_API_URL] = settings.rag_no_citations_api_url
     config[CONFIG_KEY_RAG_BASIC_MODEL_ID] = settings.rag_no_citations_model_id
@@ -686,7 +738,22 @@ def _brief_font_css_for_name(font_family_name: str) -> str:
     return DEFAULT_BRIEF_FONT_FAMILY_CSS
 
 
-def load_ui_settings() -> tuple[int, int, str]:
+def _coerce_color_value(value: Any, default: str) -> str:
+    if not isinstance(value, str):
+        return default
+    candidate = value.strip()
+    if not candidate:
+        return default
+    rgba = Gdk.RGBA()
+    try:
+        if rgba.parse(candidate):
+            return candidate
+    except Exception:
+        return default
+    return default
+
+
+def load_ui_settings() -> tuple[int, int, str, str]:
     config = _read_config()
     raw_rag_size = config.get(CONFIG_KEY_RAG_OUTPUT_FONT_SIZE, DEFAULT_OUTPUT_FONT_SIZE)
     try:
@@ -703,13 +770,18 @@ def load_ui_settings() -> tuple[int, int, str]:
     brief_font_family = _normalize_brief_font_family_name(
         config.get(CONFIG_KEY_BRIEF_FONT_FAMILY)
     )
-    return rag_size, search_size, brief_font_family
+    search_highlight_color = _coerce_color_value(
+        config.get(CONFIG_KEY_SEARCH_HIGHLIGHT_COLOR, DEFAULT_SEARCH_HIGHLIGHT_COLOR),
+        DEFAULT_SEARCH_HIGHLIGHT_COLOR,
+    )
+    return rag_size, search_size, brief_font_family, search_highlight_color
 
 
 def save_ui_settings(
     rag_font_size: int,
     search_font_size: int,
     brief_font_family: str | None = None,
+    search_highlight_color: str | None = None,
 ) -> None:
     config = _read_config()
     config[CONFIG_KEY_RAG_OUTPUT_FONT_SIZE] = int(rag_font_size)
@@ -717,6 +789,11 @@ def save_ui_settings(
     if brief_font_family is not None:
         config[CONFIG_KEY_BRIEF_FONT_FAMILY] = _normalize_brief_font_family_name(
             brief_font_family
+        )
+    if search_highlight_color is not None:
+        config[CONFIG_KEY_SEARCH_HIGHLIGHT_COLOR] = _coerce_color_value(
+            search_highlight_color,
+            DEFAULT_SEARCH_HIGHLIGHT_COLOR,
         )
     _write_config(config)
 
@@ -740,6 +817,12 @@ class SearchResult:
     snippet: str
 
 
+@dataclass(frozen=True)
+class SearchHit:
+    result_index: int
+    match_index: int
+
+
 class ReferenceApp(Adw.Application):
     def __init__(self) -> None:
         super().__init__(
@@ -755,6 +838,7 @@ class ReferenceApp(Adw.Application):
         self._window: ReferenceWindow | None = None
         self.connect("activate", self._on_activate)
         self._settings_window: ReferenceSettingsWindow | None = None
+        self._shortcuts_window: Gtk.ShortcutsWindow | None = None
 
         action = Gio.SimpleAction.new("open-settings", None)
         action.connect("activate", self._on_open_settings)
@@ -772,8 +856,13 @@ class ReferenceApp(Adw.Application):
         action.connect("activate", self._on_focus_search)
         self.add_action(action)
 
+        action = Gio.SimpleAction.new("show-shortcuts", None)
+        action.connect("activate", self._on_show_shortcuts)
+        self.add_action(action)
+
         self.set_accels_for_action("app.focus-rag", ["<Primary><Shift>a"])
-        self.set_accels_for_action("app.focus-search", ["<Primary><Shift>f"])
+        self.set_accels_for_action("app.focus-search", ["<Primary>f"])
+        self.set_accels_for_action("app.show-shortcuts", ["F1"])
 
     def _on_activate(self, _app: Adw.Application) -> None:
         if self._window is None:
@@ -805,6 +894,61 @@ class ReferenceApp(Adw.Application):
             return
         self._window._refresh_rag_quote_colors()
 
+    def _build_shortcuts_window(self) -> Gtk.ShortcutsWindow:
+        if self._shortcuts_window is not None:
+            return self._shortcuts_window
+
+        window = Gtk.ShortcutsWindow(
+            transient_for=self._window,
+            modal=False,
+            hide_on_close=True,
+            title=f"{APP_NAME} Keyboard Shortcuts",
+        )
+        window.set_default_size(760, 540)
+
+        section = Gtk.ShortcutsSection(title="Keyboard Shortcuts")
+
+        search_group = Gtk.ShortcutsGroup(title="Search")
+        search_group.append(
+            Gtk.ShortcutsShortcut(title="Focus search field", accelerator="<Primary>F")
+        )
+        search_group.append(
+            Gtk.ShortcutsShortcut(title="Next search hit", accelerator="<Primary>G")
+        )
+        search_group.append(
+            Gtk.ShortcutsShortcut(
+                title="Previous search hit",
+                accelerator="<Primary><Shift>G",
+            )
+        )
+        section.append(search_group)
+
+        rag_group = Gtk.ShortcutsGroup(title="RAG")
+        rag_group.append(
+            Gtk.ShortcutsShortcut(
+                title="Focus RAG question box",
+                accelerator="<Primary><Shift>A",
+            )
+        )
+        section.append(rag_group)
+
+        help_group = Gtk.ShortcutsGroup(title="Reference")
+        help_group.append(
+            Gtk.ShortcutsShortcut(title="Show keyboard shortcuts", accelerator="F1")
+        )
+        section.append(help_group)
+
+        window.add_section(section)
+        self._shortcuts_window = window
+        return window
+
+    def _on_show_shortcuts(self, _action: Gio.SimpleAction, _param: GLib.Variant | None) -> None:
+        if self._window is None:
+            return
+        window = self._build_shortcuts_window()
+        window.set_transient_for(self._window)
+        window.present()
+
 
 class ReferenceWindow(Adw.ApplicationWindow):
     def __init__(self, app: ReferenceApp) -> None:
@@ -817,6 +961,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             self._rag_output_font_size,
             self._search_output_font_size,
             self._brief_font_family_name,
+            self._search_highlight_color,
         ) = load_ui_settings()
         self._rag_output_state = AiOutputView()
         self._search_output_state = AiOutputView()
@@ -851,6 +996,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._search_results: list[SearchResult] = []
         self._search_result_index = 0
         self._search_terms: list[str] = []
+        self._search_matches_by_result: dict[int, list[tuple[int, int]]] = {}
+        self._search_hit_order: list[SearchHit] = []
+        self._search_current_hit_index = -1
+        self._search_text_cache: dict[str, str] = {}
 
         self._build_ui()
         self._install_shortcuts()
@@ -868,6 +1017,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         menu_model = Gio.Menu()
         menu_model.append("Settings", "app.open-settings")
         menu_model.append("Update Index", "app.update-index")
+        menu_model.append("Keyboard Shortcuts", "app.show-shortcuts")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu_button.set_menu_model(menu_model)
         header.pack_end(menu_button)
@@ -959,8 +1109,32 @@ class ReferenceWindow(Adw.ApplicationWindow):
         search_entry = Gtk.SearchEntry()
         search_entry.set_hexpand(True)
         search_entry.connect("activate", self._on_search_activate)
+        search_key_controller = Gtk.EventControllerKey.new()
+        search_key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        search_key_controller.connect("key-pressed", self._on_search_entry_key_pressed)
+        search_entry.add_controller(search_key_controller)
         search_controls.append(search_entry)
         self._search_entry = search_entry
+
+        nav_label = Gtk.Label(label="0 hits", xalign=0)
+        nav_label.add_css_class("dim-label")
+        nav_label.set_valign(Gtk.Align.CENTER)
+        search_controls.append(nav_label)
+        self._search_nav_label = nav_label
+
+        prev_button = Gtk.Button(icon_name="go-previous-symbolic")
+        prev_button.add_css_class("flat")
+        prev_button.set_tooltip_text("Previous search hit (Ctrl+Shift+G)")
+        prev_button.connect("clicked", self._on_search_prev_clicked)
+        search_controls.append(prev_button)
+        self._search_prev_button = prev_button
+
+        next_button = Gtk.Button(icon_name="go-next-symbolic")
+        next_button.add_css_class("flat")
+        next_button.set_tooltip_text("Next search hit (Ctrl+G)")
+        next_button.connect("clicked", self._on_search_next_clicked)
+        search_controls.append(next_button)
+        self._search_next_button = next_button
 
         search_button = Gtk.Button(label="Search")
         search_button.add_css_class("flat")
@@ -980,25 +1154,6 @@ class ReferenceWindow(Adw.ApplicationWindow):
         search_nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         search_nav.set_hexpand(True)
         search_nav.set_halign(Gtk.Align.FILL)
-
-        prev_button = Gtk.Button(icon_name="go-previous-symbolic")
-        prev_button.add_css_class("flat")
-        prev_button.set_tooltip_text("Previous brief")
-        prev_button.connect("clicked", self._on_search_prev_clicked)
-        search_nav.append(prev_button)
-        self._search_prev_button = prev_button
-
-        next_button = Gtk.Button(icon_name="go-next-symbolic")
-        next_button.add_css_class("flat")
-        next_button.set_tooltip_text("Next brief")
-        next_button.connect("clicked", self._on_search_next_clicked)
-        search_nav.append(next_button)
-        self._search_next_button = next_button
-
-        nav_label = Gtk.Label(label="0 hits", xalign=0)
-        nav_label.add_css_class("dim-label")
-        search_nav.append(nav_label)
-        self._search_nav_label = nav_label
 
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         title_box.set_hexpand(True)
@@ -1051,10 +1206,24 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
         search_trigger = Gtk.KeyvalTrigger.new(
             Gdk.KEY_f,
-            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK,
+            Gdk.ModifierType.CONTROL_MASK,
         )
         search_action = Gtk.CallbackAction.new(self._focus_search_entry)
         controller.add_shortcut(Gtk.Shortcut.new(search_trigger, search_action))
+
+        search_next_trigger = Gtk.KeyvalTrigger.new(
+            Gdk.KEY_g,
+            Gdk.ModifierType.CONTROL_MASK,
+        )
+        search_next_action = Gtk.CallbackAction.new(self._focus_next_search_hit)
+        controller.add_shortcut(Gtk.Shortcut.new(search_next_trigger, search_next_action))
+
+        search_prev_trigger = Gtk.KeyvalTrigger.new(
+            Gdk.KEY_g,
+            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK,
+        )
+        search_prev_action = Gtk.CallbackAction.new(self._focus_previous_search_hit)
+        controller.add_shortcut(Gtk.Shortcut.new(search_prev_trigger, search_prev_action))
         self.add_controller(controller)
 
     def _focus_rag_entry(self, *_args: Any) -> None:
@@ -1064,6 +1233,28 @@ class ReferenceWindow(Adw.ApplicationWindow):
     def _focus_search_entry(self, *_args: Any) -> None:
         if self._search_entry:
             self._search_entry.grab_focus()
+            self._search_entry.select_region(0, -1)
+
+    def _focus_next_search_hit(self, *_args: Any) -> None:
+        self._navigate_search_hit(1)
+
+    def _focus_previous_search_hit(self, *_args: Any) -> None:
+        self._navigate_search_hit(-1)
+
+    def _on_search_entry_key_pressed(
+        self,
+        _controller: Gtk.EventControllerKey,
+        keyval: int,
+        _keycode: int,
+        state: int,
+    ) -> bool:
+        if not (state & Gdk.ModifierType.CONTROL_MASK):
+            return False
+        key = Gdk.keyval_name(keyval)
+        if key not in ("g", "G"):
+            return False
+        direction = -1 if (state & Gdk.ModifierType.SHIFT_MASK) else 1
+        return self._navigate_search_hit(direction)
 
     def _build_rag_output_view(self) -> tuple[Gtk.Widget, AiOutputView]:
         output_state = AiOutputView()
@@ -1171,8 +1362,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
         prompt = settings.rag_prompt_no_citations
         return prompt or DEFAULT_RAG_PROMPT
 
-    def _resolve_rag_llm_settings(self, prompt_kind: str) -> tuple[str, str, str]:
-        return self._ai_settings.llm_settings_for_prompt(prompt_kind)
+    def _resolve_rag_llm_settings(self, prompt_kind: str) -> tuple[str, str, str, bool]:
+        return (
+            *self._ai_settings.llm_settings_for_prompt(prompt_kind),
+            self._ai_settings.disable_reasoning_for_prompt(prompt_kind),
+        )
 
     def _ask_rag_question(self, question: str, prompt_kind: str) -> None:
         if not question:
@@ -1192,7 +1386,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         cancel_event = threading.Event()
         self._rag_cancel_event = cancel_event
         prompt_text = self._resolve_rag_prompt(prompt_kind)
-        api_url, api_key, model_id = self._resolve_rag_llm_settings(prompt_kind)
+        api_url, api_key, model_id, disable_reasoning = self._resolve_rag_llm_settings(prompt_kind)
         thread = threading.Thread(
             target=self._rag_worker,
             args=(
@@ -1201,6 +1395,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 api_url,
                 api_key,
                 model_id,
+                disable_reasoning,
                 self._ai_settings,
                 cancel_event,
                 generation,
@@ -1217,6 +1412,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         api_url: str,
         api_key: str,
         model_id: str,
+        disable_reasoning: bool,
         settings: AiSettings,
         cancel_event: threading.Event | None,
         generation: int,
@@ -1235,6 +1431,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 cancel_event=cancel_event,
                 generation=generation,
                 include_reasoning=False,
+                disable_reasoning=disable_reasoning,
             )
         except Exception as exc:  # noqa: BLE001
             GLib.idle_add(self._on_rag_stream_error, str(exc), generation)
@@ -1437,6 +1634,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         cancel_event: threading.Event | None,
         generation: int,
         include_reasoning: bool = False,
+        disable_reasoning: bool = False,
     ) -> None:
         headers = {
             "Content-Type": "application/json",
@@ -1449,7 +1647,13 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "messages": messages,
             "stream": True,
         }
-        if _model_looks_deepseek(model_id):
+        if disable_reasoning:
+            _apply_disable_reasoning_to_body(
+                body,
+                model_id=model_id,
+                disable_reasoning=True,
+            )
+        elif _model_looks_deepseek(model_id):
             body["thinking"] = {"type": "enabled"}
         elif _model_looks_kimi(model_id):
             body["thinking"] = {"type": "enabled"}
@@ -1566,16 +1770,12 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
     def _on_search_activate(self, entry: Gtk.SearchEntry) -> None:
         query = entry.get_text().strip()
-        if query:
-            entry.set_text("")
         self._run_search(query, from_link=False)
 
     def _on_search_clicked(self, _button: Gtk.Button) -> None:
         if not self._search_entry:
             return
         query = self._search_entry.get_text().strip()
-        if query:
-            self._search_entry.set_text("")
         self._run_search(query, from_link=False)
 
     def _on_search_highlighted_clicked(self, _button: Gtk.Button) -> None:
@@ -1613,8 +1813,25 @@ class ReferenceWindow(Adw.ApplicationWindow):
             self._show_toast(f"Search failed: {exc}")
             return
         self._search_results = results
-        self._search_result_index = 0
         self._search_terms = self._extract_search_terms(phrase)
+        self._search_text_cache.clear()
+        self._search_matches_by_result = {}
+        self._search_hit_order = []
+        self._search_current_hit_index = -1
+        self._search_result_index = 0
+        for result_index, result in enumerate(results):
+            text = self._get_search_result_text(result.path)
+            if text is None:
+                continue
+            matches = self._find_search_matches(text, self._search_terms)
+            self._search_matches_by_result[result_index] = matches
+            self._search_hit_order.extend(
+                SearchHit(result_index=result_index, match_index=match_index)
+                for match_index in range(len(matches))
+            )
+        if self._search_hit_order:
+            self._search_current_hit_index = 0
+            self._search_result_index = self._search_hit_order[0].result_index
         self._update_search_nav()
         self._show_search_result_at_index(self._search_result_index)
 
@@ -1655,18 +1872,41 @@ class ReferenceWindow(Adw.ApplicationWindow):
         cleaned = phrase.strip()
         return [cleaned] if cleaned else []
 
+    def _find_search_matches(self, text: str, terms: list[str]) -> list[tuple[int, int]]:
+        matches: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for term in terms:
+            if not term:
+                continue
+            pattern = re.compile(re.escape(term), re.IGNORECASE)
+            for match in pattern.finditer(text):
+                span = (match.start(), match.end())
+                if span in seen:
+                    continue
+                seen.add(span)
+                matches.append(span)
+        matches.sort()
+        return matches
+
+    def _current_search_hit(self) -> SearchHit | None:
+        if 0 <= self._search_current_hit_index < len(self._search_hit_order):
+            return self._search_hit_order[self._search_current_hit_index]
+        return None
+
     def _update_search_nav(self) -> None:
-        total = len(self._search_results)
+        total = len(self._search_hit_order)
         if self._search_nav_label:
             if total == 0:
                 self._search_nav_label.set_text("0 hits")
             else:
-                current = self._search_result_index + 1
-                self._search_nav_label.set_text(f"{current} of {total} hits")
+                current = self._search_current_hit_index + 1
+                self._search_nav_label.set_text(f"{current}/{total}")
         if self._search_prev_button:
-            self._search_prev_button.set_sensitive(total > 1)
+            self._search_prev_button.set_sensitive(total > 0 and self._search_current_hit_index > 0)
         if self._search_next_button:
-            self._search_next_button.set_sensitive(total > 1)
+            self._search_next_button.set_sensitive(
+                total > 0 and self._search_current_hit_index < total - 1
+            )
 
     def _show_search_result_at_index(self, index: int) -> None:
         state = self._search_output_state
@@ -1681,7 +1921,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if index < 0 or index >= len(self._search_results):
             return
         result = self._search_results[index]
-        text = self._fetch_brief_text(result.path)
+        text = self._get_search_result_text(result.path)
         if text is None:
             state.buffer.set_text("Brief not found in the index.")
             if self._search_title_label:
@@ -1692,40 +1932,48 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if self._search_title_label:
             self._search_title_label.set_text(result.title)
         self._update_search_download_button_state()
-        first_match = self._highlight_search_terms(state.buffer, text, self._search_terms)
-        if first_match is not None:
-            GLib.idle_add(self._scroll_search_view_to_offset, state.view, state.buffer, first_match)
+        active_hit = self._current_search_hit()
+        active_match_index: int | None = None
+        if active_hit and active_hit.result_index == index:
+            active_match_index = active_hit.match_index
+        target_offset = self._apply_search_highlights(
+            state.buffer,
+            text,
+            self._search_matches_by_result.get(index, []),
+            active_match_index,
+        )
+        if target_offset is not None:
+            GLib.idle_add(self._scroll_search_view_to_offset, state.view, state.buffer, target_offset)
 
-    def _highlight_search_terms(
+    def _apply_search_highlights(
         self,
         buffer: Gtk.TextBuffer,
         text: str,
-        terms: list[str],
+        matches: list[tuple[int, int]],
+        active_match_index: int | None,
     ) -> int | None:
         table = buffer.get_tag_table()
         tag = table.lookup("search-highlight") if table else None
         if tag is None:
             tag = buffer.create_tag(
                 "search-highlight",
-                background=DEFAULT_SEARCH_HIGHLIGHT_COLOR,
+                background=self._search_highlight_color,
             )
         else:
-            tag.set_property("background", DEFAULT_SEARCH_HIGHLIGHT_COLOR)
+            tag.set_property("background", self._search_highlight_color)
             tag.set_property("foreground-set", False)
         start, end = buffer.get_bounds()
         buffer.remove_tag(tag, start, end)
-        first_match: int | None = None
-        for term in terms:
-            if not term:
-                continue
-            pattern = re.compile(re.escape(term), re.IGNORECASE)
-            for match in pattern.finditer(text):
-                start_iter = buffer.get_iter_at_offset(match.start())
-                end_iter = buffer.get_iter_at_offset(match.end())
-                buffer.apply_tag(tag, start_iter, end_iter)
-                if first_match is None or match.start() < first_match:
-                    first_match = match.start()
-        return first_match
+        target_offset: int | None = None
+        for match_index, (match_start, match_end) in enumerate(matches):
+            start_iter = buffer.get_iter_at_offset(match_start)
+            end_iter = buffer.get_iter_at_offset(match_end)
+            buffer.apply_tag(tag, start_iter, end_iter)
+            if match_index == active_match_index:
+                target_offset = match_start
+            elif target_offset is None:
+                target_offset = match_start
+        return target_offset
 
     def _scroll_search_view_to_offset(
         self,
@@ -1734,21 +1982,30 @@ class ReferenceWindow(Adw.ApplicationWindow):
         offset: int,
     ) -> None:
         target_iter = buffer.get_iter_at_offset(offset)
-        view.scroll_to_iter(target_iter, 0.1, True, 0.5, 0.5)
+        view.scroll_to_iter(target_iter, 0.0, True, 0.5, 0.5)
 
     def _on_search_prev_clicked(self, _button: Gtk.Button) -> None:
-        if not self._search_results:
-            return
-        self._search_result_index = (self._search_result_index - 1) % len(self._search_results)
-        self._update_search_nav()
-        self._show_search_result_at_index(self._search_result_index)
+        self._navigate_search_hit(-1)
 
     def _on_search_next_clicked(self, _button: Gtk.Button) -> None:
-        if not self._search_results:
-            return
-        self._search_result_index = (self._search_result_index + 1) % len(self._search_results)
+        self._navigate_search_hit(1)
+
+    def _navigate_search_hit(self, direction: int) -> bool:
+        if direction == 0 or not self._search_hit_order:
+            return False
+        current = self._search_current_hit_index
+        if current < 0 or current >= len(self._search_hit_order):
+            next_index = 0 if direction > 0 else len(self._search_hit_order) - 1
+        else:
+            next_index = current + direction
+            if next_index < 0 or next_index >= len(self._search_hit_order):
+                return True
+        self._search_current_hit_index = next_index
+        hit = self._search_hit_order[next_index]
+        self._search_result_index = hit.result_index
         self._update_search_nav()
         self._show_search_result_at_index(self._search_result_index)
+        return True
 
     def _on_search_download_clicked(self, _button: Gtk.Button) -> None:
         if not self._search_results:
@@ -1848,6 +2105,15 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if row:
             return row[0]
         return None
+
+    def _get_search_result_text(self, path: str) -> str | None:
+        cached = self._search_text_cache.get(path)
+        if cached is not None:
+            return cached
+        text = self._fetch_brief_text(path)
+        if text is not None:
+            self._search_text_cache[path] = text
+        return text
 
     def _on_update_index_clicked(self, _button: Gtk.Button | None) -> None:
         if self._indexing:
@@ -2222,20 +2488,25 @@ class ReferenceWindow(Adw.ApplicationWindow):
         rag_size: int,
         search_size: int,
         brief_font_family: str,
+        search_highlight_color: str,
     ) -> bool:
         size_changed = (
             rag_size != self._rag_output_font_size
             or search_size != self._search_output_font_size
         )
         brief_font_changed = brief_font_family != self._brief_font_family_name
+        highlight_color_changed = search_highlight_color != self._search_highlight_color
         self._rag_output_font_size = rag_size
         self._search_output_font_size = search_size
         self._brief_font_family_name = brief_font_family
+        self._search_highlight_color = search_highlight_color
         if size_changed or brief_font_changed:
             self._refresh_output_colors()
             self._show_toast("Display settings saved. Restart Reference to apply.")
         else:
             self._apply_ui_settings()
+        if highlight_color_changed and self._search_results:
+            self._show_search_result_at_index(self._search_result_index)
         return size_changed or brief_font_changed
 
     def _prepare_for_font_resize(self) -> None:
@@ -2250,6 +2521,10 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._search_results = []
         self._search_result_index = 0
         self._search_terms = []
+        self._search_matches_by_result = {}
+        self._search_hit_order = []
+        self._search_current_hit_index = -1
+        self._search_text_cache.clear()
         self._update_search_nav()
         if self._search_title_label:
             self._search_title_label.set_text("")
@@ -2279,7 +2554,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         table = buffer.get_tag_table()
         tag = table.lookup("search-highlight") if table else None
         if tag is not None:
-            tag.set_property("background", DEFAULT_SEARCH_HIGHLIGHT_COLOR)
+            tag.set_property("background", self._search_highlight_color)
             tag.set_property("foreground-set", False)
 
     def _apply_ai_output_links(self, text: str, state: AiOutputView) -> None:
@@ -2304,14 +2579,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
             offset += len(before)
             phrase = (match.group(1) or match.group(2) or "").strip()
             if phrase:
-                link_phrase, trailing = split_link_phrase(phrase)
+                link_phrase = split_link_phrase(phrase)
                 if link_phrase:
                     parts.append(link_phrase)
                     spans.append((offset, offset + len(link_phrase), link_phrase))
                     offset += len(link_phrase)
-                if trailing:
-                    parts.append(trailing)
-                    offset += len(trailing)
             cursor = end
         parts.append(text[cursor:])
         return "".join(parts), spans
@@ -2417,6 +2689,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._llm_api_url_rows: dict[str, Adw.EntryRow] = {}
         self._llm_model_rows: dict[str, Adw.EntryRow] = {}
         self._llm_api_key_rows: dict[str, Adw.EntryRow] = {}
+        self._llm_reasoning_rows: dict[str, Adw.SwitchRow] = {}
         self._rag_top_k_row: Adw.EntryRow | None = None
         self._embeddings_provider_row: Adw.ComboRow | None = None
         self._embeddings_provider_values: list[str] = [RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS]
@@ -2428,6 +2701,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self._search_font_size_row: Adw.EntryRow | None = None
         self._brief_font_family_row: Adw.ComboRow | None = None
         self._brief_font_family_values: list[str] = []
+        self._search_highlight_color_control: Gtk.Widget | None = None
         self._prompt_buffers: dict[str, Gtk.TextBuffer] = {}
         self._status_label: Gtk.Label | None = None
         self._build_ui()
@@ -2471,6 +2745,12 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         brief_font_family_row.set_model(Gtk.StringList.new(self._brief_font_family_values))
         display_group.add(brief_font_family_row)
         self._brief_font_family_row = brief_font_family_row
+
+        search_highlight_row, self._search_highlight_color_control = self._build_color_row(
+            "Search Highlight Color",
+            DEFAULT_SEARCH_HIGHLIGHT_COLOR,
+        )
+        display_group.add(search_highlight_row)
 
         self._add_llm_settings_group(box, "No Citations LLM", RAG_PROMPT_NO_CITATIONS)
         self._add_llm_settings_group(
@@ -2588,6 +2868,61 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             row.set_hexpand(True)
         return row
 
+    def _build_color_row(self, title: str, default: str) -> tuple[Gtk.Widget, Gtk.Widget]:
+        color_dialog_cls = getattr(Gtk, "ColorDialog", None)
+        color_dialog_button_cls = getattr(Gtk, "ColorDialogButton", None)
+        if color_dialog_cls is not None and color_dialog_button_cls is not None:
+            row = Adw.ActionRow(title=title)
+            dialog = color_dialog_cls()
+            if hasattr(dialog, "set_with_alpha"):
+                dialog.set_with_alpha(True)
+            button = color_dialog_button_cls.new(dialog)
+            if hasattr(button, "add_css_class"):
+                button.add_css_class("flat")
+            row.add_suffix(button)
+            row.set_activatable_widget(button)
+            self._set_color_control_value(button, default, default)
+            return row, button
+
+        color_button_cls = getattr(Gtk, "ColorButton", None)
+        if color_button_cls is not None:
+            row = Adw.ActionRow(title=title)
+            button = color_button_cls()
+            if hasattr(button, "add_css_class"):
+                button.add_css_class("flat")
+            row.add_suffix(button)
+            row.set_activatable_widget(button)
+            self._set_color_control_value(button, default, default)
+            return row, button
+        fallback = Adw.EntryRow(title=title)
+        fallback.set_hexpand(True)
+        fallback.set_text(default)
+        return fallback, fallback
+
+    def _set_color_control_value(self, control: Gtk.Widget | None, value: str, default: str) -> None:
+        if control is None:
+            return
+        normalized = _coerce_color_value(value, default)
+        if hasattr(control, "set_rgba"):
+            rgba = Gdk.RGBA()
+            rgba.parse(normalized)
+            control.set_rgba(rgba)
+            return
+        if hasattr(control, "set_text"):
+            control.set_text(normalized)
+
+    def _read_color_control_value(self, control: Gtk.Widget | None, default: str) -> str:
+        if control is None:
+            return default
+        if hasattr(control, "get_rgba"):
+            rgba = control.get_rgba()
+            if rgba is not None:
+                return _coerce_color_value(rgba.to_string(), default)
+            return default
+        if hasattr(control, "get_text"):
+            return _coerce_color_value(control.get_text(), default)
+        return default
+
     def _add_llm_settings_group(self, box: Gtk.Box, title: str, prompt_kind: str) -> None:
         group = Adw.PreferencesGroup(title=title)
         group.add_css_class("list-stack")
@@ -2607,6 +2942,11 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         api_key = self._build_password_row("API Key")
         group.add(api_key)
         self._llm_api_key_rows[prompt_kind] = api_key
+
+        reasoning_row = Adw.SwitchRow(title="Disable reasoning")
+        reasoning_row.set_active(False)
+        group.add(reasoning_row)
+        self._llm_reasoning_rows[prompt_kind] = reasoning_row
 
     def _add_prompt_section(self, box: Gtk.Box, title: str, text: str, key: str) -> None:
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -2664,6 +3004,10 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 self._llm_model_rows[prompt_kind].set_text(model_id)
             if prompt_kind in self._llm_api_key_rows:
                 self._llm_api_key_rows[prompt_kind].set_text(api_key)
+            if prompt_kind in self._llm_reasoning_rows:
+                self._llm_reasoning_rows[prompt_kind].set_active(
+                    settings.disable_reasoning_for_prompt(prompt_kind)
+                )
         if self._rag_top_k_row:
             self._rag_top_k_row.set_text(str(settings.rag_top_k))
         if self._embeddings_provider_row:
@@ -2692,7 +3036,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             self._prompt_buffers[RAG_PROMPT_STATUTES_ONLY].set_text(
                 settings.rag_prompt_statutes_only or DEFAULT_RAG_PROMPT_STATUTES_ONLY
             )
-        rag_size, search_size, brief_font_family = load_ui_settings()
+        rag_size, search_size, brief_font_family, search_highlight_color = load_ui_settings()
         if self._font_size_row:
             self._font_size_row.set_text(str(rag_size))
         if self._search_font_size_row:
@@ -2704,6 +3048,11 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 )
             else:
                 self._brief_font_family_row.set_selected(0)
+        self._set_color_control_value(
+            self._search_highlight_color_control,
+            search_highlight_color,
+            DEFAULT_SEARCH_HIGHLIGHT_COLOR,
+        )
 
     def _on_save_clicked(self, _button: Gtk.Button) -> None:
         if not all(
@@ -2726,13 +3075,16 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 prompt_kind not in self._llm_api_url_rows
                 or prompt_kind not in self._llm_model_rows
                 or prompt_kind not in self._llm_api_key_rows
+                or prompt_kind not in self._llm_reasoning_rows
             ):
                 return
         settings = AiSettings(
             rag_no_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
             rag_no_citations_model_id=self._llm_model_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
             rag_no_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
-            rag_no_citations_show_reasoning_trace=False,
+            rag_no_citations_show_reasoning_trace=bool(
+                self._llm_reasoning_rows[RAG_PROMPT_NO_CITATIONS].get_active()
+            ),
             rag_no_citations_with_reasoning_api_url=self._llm_api_url_rows[
                 RAG_PROMPT_NO_CITATIONS_WITH_REASONING
             ].get_text().strip(),
@@ -2742,15 +3094,21 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             rag_no_citations_with_reasoning_api_key=self._llm_api_key_rows[
                 RAG_PROMPT_NO_CITATIONS_WITH_REASONING
             ].get_text().strip(),
-            rag_no_citations_with_reasoning_show_reasoning_trace=False,
+            rag_no_citations_with_reasoning_show_reasoning_trace=bool(
+                self._llm_reasoning_rows[RAG_PROMPT_NO_CITATIONS_WITH_REASONING].get_active()
+            ),
             rag_full_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
             rag_full_citations_model_id=self._llm_model_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
             rag_full_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
-            rag_full_citations_show_reasoning_trace=False,
+            rag_full_citations_show_reasoning_trace=bool(
+                self._llm_reasoning_rows[RAG_PROMPT_FULL_CITATIONS].get_active()
+            ),
             rag_statutes_only_api_url=self._llm_api_url_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
             rag_statutes_only_model_id=self._llm_model_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
             rag_statutes_only_api_key=self._llm_api_key_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
-            rag_statutes_only_show_reasoning_trace=False,
+            rag_statutes_only_show_reasoning_trace=bool(
+                self._llm_reasoning_rows[RAG_PROMPT_STATUTES_ONLY].get_active()
+            ),
             rag_prompt_no_citations=self._prompt_text(
                 RAG_PROMPT_NO_CITATIONS,
                 DEFAULT_RAG_PROMPT,
@@ -2811,11 +3169,16 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             brief_font_family = self._brief_font_family_values[selected_brief_font_family_index]
         else:
             brief_font_family = DEFAULT_BRIEF_FONT_FAMILY_NAME
-        save_ui_settings(rag_size, search_size, brief_font_family)
+        search_highlight_color = self._read_color_control_value(
+            self._search_highlight_color_control,
+            DEFAULT_SEARCH_HIGHLIGHT_COLOR,
+        )
+        save_ui_settings(rag_size, search_size, brief_font_family, search_highlight_color)
         size_changed = self._parent.apply_saved_ui_settings(
             rag_size,
             search_size,
             brief_font_family,
+            search_highlight_color,
         )
         if self._status_label:
             if size_changed:
