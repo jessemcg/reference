@@ -1647,37 +1647,62 @@ class ReferenceWindow(Adw.ApplicationWindow):
             "messages": messages,
             "stream": True,
         }
-        if disable_reasoning:
-            _apply_disable_reasoning_to_body(
-                body,
-                model_id=model_id,
-                disable_reasoning=True,
-            )
-        elif _model_looks_deepseek(model_id):
-            body["thinking"] = {"type": "enabled"}
-        elif _model_looks_kimi(model_id):
-            body["thinking"] = {"type": "enabled"}
-        data = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(api_url, data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=None) as resp:
-                for chunk in self._iter_sse_chunks(resp, cancel_event, include_reasoning=include_reasoning):
-                    if cancel_event and cancel_event.is_set():
-                        GLib.idle_add(self._on_rag_stream_cancelled, generation)
-                        return
-                    GLib.idle_add(self._append_rag_output, chunk, generation)
-            if cancel_event and cancel_event.is_set():
-                GLib.idle_add(self._on_rag_stream_cancelled, generation)
-            else:
-                GLib.idle_add(self._on_rag_stream_finished, generation)
-        except urllib.error.HTTPError as exc:
-            GLib.idle_add(
-                self._on_rag_stream_error,
-                f"HTTP error {exc.code}: {exc.reason or 'request failed'}",
-                generation,
-            )
-        except Exception as exc:  # noqa: BLE001
-            GLib.idle_add(self._on_rag_stream_error, str(exc), generation)
+        _apply_disable_reasoning_to_body(
+            body,
+            model_id=model_id,
+            disable_reasoning=disable_reasoning,
+        )
+        attempted_without_thinking = False
+        attempted_without_reasoning_effort = False
+
+        while True:
+            data = json.dumps(body).encode("utf-8")
+            req = urllib.request.Request(api_url, data=data, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=None) as resp:
+                    for chunk in self._iter_sse_chunks(resp, cancel_event, include_reasoning=include_reasoning):
+                        if cancel_event and cancel_event.is_set():
+                            GLib.idle_add(self._on_rag_stream_cancelled, generation)
+                            return
+                        GLib.idle_add(self._append_rag_output, chunk, generation)
+                if cancel_event and cancel_event.is_set():
+                    GLib.idle_add(self._on_rag_stream_cancelled, generation)
+                else:
+                    GLib.idle_add(self._on_rag_stream_finished, generation)
+                return
+            except urllib.error.HTTPError as exc:
+                try:
+                    error_body = exc.read().decode("utf-8", errors="ignore")
+                except Exception:  # noqa: BLE001
+                    error_body = ""
+                message = (error_body.strip() or exc.reason or "request failed").lower()
+                if (
+                    not attempted_without_thinking
+                    and "thinking" in body
+                    and "thinking" in message
+                    and any(marker in message for marker in ("unsupported", "unknown", "invalid"))
+                ):
+                    attempted_without_thinking = True
+                    body.pop("thinking", None)
+                    continue
+                if (
+                    not attempted_without_reasoning_effort
+                    and "reasoning_effort" in body
+                    and "reasoning_effort" in message
+                    and any(marker in message for marker in ("unsupported", "unknown", "invalid"))
+                ):
+                    attempted_without_reasoning_effort = True
+                    body.pop("reasoning_effort", None)
+                    continue
+                GLib.idle_add(
+                    self._on_rag_stream_error,
+                    f"HTTP error {exc.code}: {error_body.strip() or exc.reason or 'request failed'}",
+                    generation,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._on_rag_stream_error, str(exc), generation)
+                return
 
     def _iter_sse_chunks(
         self,
