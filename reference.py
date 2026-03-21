@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -106,6 +107,7 @@ DEFAULT_TEXT_COLOR = "alpha(@window_fg_color, 0.68)"
 DEFAULT_QUOTED_PHRASE_ALPHA = 1.0
 DEFAULT_SEARCH_HIGHLIGHT_COLOR = "#ffff00"
 DEFAULT_RAG_LINE_HEIGHT = 1.2
+DEFAULT_RAG_AUDIT_FONT_SIZE_PT = 10
 DEFAULT_RAG_TOP_K = 6
 RAG_OUTPUT_MIN_HEIGHT = 200
 RAG_OUTPUT_MAX_HEIGHT = 480
@@ -130,6 +132,15 @@ RAG_PROMPT_NO_CITATIONS = "no_citations"
 RAG_PROMPT_NO_CITATIONS_WITH_REASONING = "no_citations_with_reasoning"
 RAG_PROMPT_FULL_CITATIONS = "full_citations"
 RAG_PROMPT_STATUTES_ONLY = "statutes_only"
+AI_VIEW_QA = "qa"
+AI_VIEW_RAG_AUDIT = "rag-audit"
+RAG_PROMPT_CHOICES: tuple[tuple[str, str], ...] = (
+    ("No Citations", RAG_PROMPT_NO_CITATIONS),
+    ("No Citations with Reasoning", RAG_PROMPT_NO_CITATIONS_WITH_REASONING),
+    ("Full Citations", RAG_PROMPT_FULL_CITATIONS),
+    ("Statutes/Rules Only", RAG_PROMPT_STATUTES_ONLY),
+    ("RAG Audit", AI_VIEW_RAG_AUDIT),
+)
 RAG_PROVIDER_VOYAGE = "voyage"
 RAG_PROVIDER_ISAACUS = "isaacus"
 DEFAULT_RAG_PROVIDER = RAG_PROVIDER_VOYAGE
@@ -982,11 +993,14 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._status_spinner: Gtk.Spinner | None = None
         self._status_label: Gtk.Label | None = None
         self._rag_entry: Gtk.Entry | None = None
+        self._rag_prompt_dropdown: Gtk.DropDown | None = None
+        self._rag_prompt_values = [value for _label, value in RAG_PROMPT_CHOICES]
+        self._rag_view_stack: Adw.ViewStack | None = None
+        self._rag_prompt_toggle_guard = False
+        self._rag_active_view = AI_VIEW_QA
+        self._last_rag_prompt_kind = RAG_PROMPT_NO_CITATIONS
+        self._rag_audit_state = AiOutputView()
         self._search_entry: Gtk.SearchEntry | None = None
-        self._rag_no_citations_button: Gtk.Button | None = None
-        self._rag_no_citations_with_reasoning_button: Gtk.Button | None = None
-        self._rag_full_citations_button: Gtk.Button | None = None
-        self._rag_statutes_only_button: Gtk.Button | None = None
         self._search_button: Gtk.Button | None = None
         self._search_prev_button: Gtk.Button | None = None
         self._search_next_button: Gtk.Button | None = None
@@ -1034,50 +1048,28 @@ class ReferenceWindow(Adw.ApplicationWindow):
         controls.set_hexpand(True)
         controls.set_valign(Gtk.Align.CENTER)
 
+        prompt_labels = [label for label, _value in RAG_PROMPT_CHOICES]
+        prompt_dropdown = Gtk.DropDown.new(Gtk.StringList.new(prompt_labels), None)
+        prompt_dropdown.set_selected(0)
+        prompt_dropdown.set_valign(Gtk.Align.CENTER)
+        prompt_dropdown.connect("notify::selected", self._on_rag_prompt_dropdown_selected)
+        controls.append(prompt_dropdown)
+        self._rag_prompt_dropdown = prompt_dropdown
+
         rag_entry = Gtk.Entry()
         rag_entry.set_hexpand(True)
-        rag_entry.set_icon_from_icon_name(Gtk.EntryIconPosition.PRIMARY, "dialog-question-symbolic")
-        rag_entry.set_icon_tooltip_text(Gtk.EntryIconPosition.PRIMARY, "Ask a RAG question")
         rag_entry.connect("activate", self._on_rag_question_activate)
         controls.append(rag_entry)
         self._rag_entry = rag_entry
 
-        rag_buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-
-        no_citations_button = Gtk.Button(label="No Citations")
-        no_citations_button.add_css_class("suggested-action")
-        no_citations_button.add_css_class("flat")
-        no_citations_button.add_css_class("no-bold")
-        no_citations_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_NO_CITATIONS)
-        rag_buttons.append(no_citations_button)
-        self._rag_no_citations_button = no_citations_button
-
-        no_citations_with_reasoning_button = Gtk.Button(label="No Citations with Reasoninng")
-        no_citations_with_reasoning_button.add_css_class("flat")
-        no_citations_with_reasoning_button.add_css_class("no-bold")
-        no_citations_with_reasoning_button.connect(
-            "clicked",
-            self._on_rag_question_clicked,
-            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
-        )
-        rag_buttons.append(no_citations_with_reasoning_button)
-        self._rag_no_citations_with_reasoning_button = no_citations_with_reasoning_button
-
-        full_citations_button = Gtk.Button(label="Full Citations")
-        full_citations_button.add_css_class("flat")
-        full_citations_button.add_css_class("no-bold")
-        full_citations_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_FULL_CITATIONS)
-        rag_buttons.append(full_citations_button)
-        self._rag_full_citations_button = full_citations_button
-
-        statutes_only_button = Gtk.Button(label="Statutes/Rules Only")
-        statutes_only_button.add_css_class("flat")
-        statutes_only_button.add_css_class("no-bold")
-        statutes_only_button.connect("clicked", self._on_rag_question_clicked, RAG_PROMPT_STATUTES_ONLY)
-        rag_buttons.append(statutes_only_button)
-        self._rag_statutes_only_button = statutes_only_button
-
-        controls.append(rag_buttons)
+        ask_button = Gtk.Button(label="A:")
+        ask_button.add_css_class("flat")
+        ask_button.add_css_class("no-bold")
+        ask_button.set_valign(Gtk.Align.CENTER)
+        ask_button.set_hexpand(False)
+        ask_button.set_tooltip_text("Ask a RAG question.")
+        ask_button.connect("clicked", self._on_rag_question_clicked)
+        controls.append(ask_button)
 
         outer.append(controls)
 
@@ -1098,9 +1090,29 @@ class ReferenceWindow(Adw.ApplicationWindow):
         outer.append(status_row)
         self._status_label = status_label
 
+        rag_view_stack = Adw.ViewStack()
+        try:
+            rag_view_stack.set_transition_type(Adw.ViewStackTransitionType.CROSSFADE)
+        except AttributeError:
+            try:
+                rag_view_stack.set_property("transition-type", Adw.ViewStackTransitionType.CROSSFADE)
+            except Exception:
+                pass
+        rag_view_stack.set_hhomogeneous(False)
+        rag_view_stack.set_vhomogeneous(False)
+        rag_view_stack.set_hexpand(True)
+        rag_view_stack.set_vexpand(False)
+
         rag_scroller, rag_state = self._build_rag_output_view()
-        outer.append(rag_scroller)
+        rag_audit_scroller, rag_audit_state = self._build_rag_output_view(monospace=True, css_class="rag-audit-view")
+        rag_view_stack.add_titled(rag_scroller, AI_VIEW_QA, "Q & A")
+        rag_view_stack.add_titled(rag_audit_scroller, AI_VIEW_RAG_AUDIT, "RAG Audit")
+        rag_view_stack.set_visible_child_name(AI_VIEW_QA)
+        outer.append(rag_view_stack)
         self._rag_output_state = rag_state
+        self._rag_audit_state = rag_audit_state
+        self._rag_view_stack = rag_view_stack
+        self._sync_rag_prompt_dropdown()
 
         search_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         search_controls.set_hexpand(True)
@@ -1256,10 +1268,15 @@ class ReferenceWindow(Adw.ApplicationWindow):
         direction = -1 if (state & Gdk.ModifierType.SHIFT_MASK) else 1
         return self._navigate_search_hit(direction)
 
-    def _build_rag_output_view(self) -> tuple[Gtk.Widget, AiOutputView]:
+    def _build_rag_output_view(
+        self,
+        *,
+        monospace: bool = False,
+        css_class: str = "rag-output",
+    ) -> tuple[Gtk.Widget, AiOutputView]:
         output_state = AiOutputView()
-        view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
-        view.add_css_class("rag-output")
+        view = Gtk.TextView(editable=False, monospace=monospace, wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        view.add_css_class(css_class)
         view.set_hexpand(True)
         view.set_vexpand(True)
         view.set_left_margin(12)
@@ -1343,13 +1360,16 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
     def _on_rag_question_activate(self, entry: Gtk.Entry) -> None:
         question = entry.get_text().strip()
-        self._ask_rag_question(question, RAG_PROMPT_NO_CITATIONS)
+        self._ask_rag_question(question, self._selected_rag_prompt_kind())
 
-    def _on_rag_question_clicked(self, _button: Gtk.Button, prompt_kind: str) -> None:
+    def _on_rag_question_clicked(self, _button: Gtk.Button) -> None:
         if not self._rag_entry:
             return
         question = self._rag_entry.get_text().strip()
-        self._ask_rag_question(question, prompt_kind)
+        self._ask_rag_question(question, self._selected_rag_prompt_kind())
+
+    def _selected_rag_prompt_kind(self) -> str:
+        return self._last_rag_prompt_kind
 
     def _resolve_rag_prompt(self, prompt_kind: str) -> str:
         settings = self._ai_settings
@@ -1368,6 +1388,43 @@ class ReferenceWindow(Adw.ApplicationWindow):
             self._ai_settings.disable_reasoning_for_prompt(prompt_kind),
         )
 
+    def _set_rag_view(self, view_name: str) -> None:
+        target = view_name if view_name in {AI_VIEW_QA, AI_VIEW_RAG_AUDIT} else AI_VIEW_QA
+        self._rag_active_view = target
+        if self._rag_view_stack and self._rag_view_stack.get_visible_child_name() != target:
+            self._rag_view_stack.set_visible_child_name(target)
+        self._sync_rag_prompt_dropdown()
+
+    def _sync_rag_prompt_dropdown(self) -> None:
+        if not self._rag_prompt_dropdown:
+            return
+        self._rag_prompt_toggle_guard = True
+        try:
+            selected = 0
+            current_value = (
+                AI_VIEW_RAG_AUDIT if self._rag_active_view == AI_VIEW_RAG_AUDIT else self._last_rag_prompt_kind
+            )
+            for index, (_label, value) in enumerate(RAG_PROMPT_CHOICES):
+                if value == current_value:
+                    selected = index
+                    break
+            self._rag_prompt_dropdown.set_selected(selected)
+        finally:
+            self._rag_prompt_toggle_guard = False
+
+    def _on_rag_prompt_dropdown_selected(self, dropdown: Gtk.DropDown, _pspec: Any) -> None:
+        if self._rag_prompt_toggle_guard:
+            return
+        selected = int(dropdown.get_selected())
+        if selected < 0 or selected >= len(RAG_PROMPT_CHOICES):
+            return
+        _label, value = RAG_PROMPT_CHOICES[selected]
+        if value == AI_VIEW_RAG_AUDIT:
+            self._set_rag_view(AI_VIEW_RAG_AUDIT)
+            return
+        self._last_rag_prompt_kind = value
+        self._set_rag_view(AI_VIEW_QA)
+
     def _ask_rag_question(self, question: str, prompt_kind: str) -> None:
         if not question:
             return
@@ -1380,9 +1437,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._stop_rag_stream_if_running()
         self._rag_request_generation += 1
         generation = self._rag_request_generation
+        self._set_rag_view(AI_VIEW_QA)
         self._set_status("", spinning=True)
         self._last_rag_answer = ""
         self._apply_ai_output_links("", self._rag_output_state)
+        self._set_rag_audit_text("")
         cancel_event = threading.Event()
         self._rag_cancel_event = cancel_event
         prompt_text = self._resolve_rag_prompt(prompt_kind)
@@ -1391,6 +1450,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             target=self._rag_worker,
             args=(
                 question,
+                prompt_kind,
                 prompt_text,
                 api_url,
                 api_key,
@@ -1408,6 +1468,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
     def _rag_worker(
         self,
         question: str,
+        prompt_kind: str,
         prompt_text: str,
         api_url: str,
         api_key: str,
@@ -1418,11 +1479,27 @@ class ReferenceWindow(Adw.ApplicationWindow):
         generation: int,
     ) -> None:
         try:
-            messages = self._build_rag_messages(question, settings, prompt_text)
-            if not messages:
+            request_data = self._build_rag_request(question, settings, prompt_kind, prompt_text)
+            if request_data is None:
                 GLib.idle_add(self._set_rag_answer, "No relevant context found in the briefing files.")
                 GLib.idle_add(self._on_rag_stream_finished, generation)
                 return
+            messages, audit_record = request_data
+            body = {
+                "model": model_id,
+                "messages": messages,
+                "stream": True,
+            }
+            _apply_disable_reasoning_to_body(
+                body,
+                model_id=model_id,
+                disable_reasoning=disable_reasoning,
+            )
+            audit_record["llm_request"] = {
+                "api_url": api_url,
+                "body": body,
+            }
+            GLib.idle_add(self._set_rag_audit_text, self._format_rag_audit_text(audit_record))
             self._stream_chat_completion(
                 api_url=api_url,
                 api_key=api_key,
@@ -1490,20 +1567,23 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._set_status("", spinning=False)
         return False
 
-    def _build_rag_messages(
+    def _build_rag_request(
         self,
         question: str,
         settings: AiSettings,
+        prompt_kind: str,
         prompt_text: str,
-    ) -> list[dict[str, str]] | None:
+    ) -> tuple[list[dict[str, str]], dict[str, Any]] | None:
         vectorstore, error = self._ensure_rag_vectorstore_ready(settings)
         if error or vectorstore is None:
             raise RuntimeError(error or "RAG data unavailable.")
         docs = vectorstore.similarity_search(question, k=_clamp_rag_top_k(settings.rag_top_k))
         if not docs:
             return None
+        retrieval_chunks: list[dict[str, Any]] = []
         context_blocks = []
-        for doc in docs:
+        for index, doc in enumerate(docs, start=1):
+            retrieval_chunks.append(self._rag_chunk_from_doc(doc, rank=index))
             title = doc.metadata.get("title") or doc.metadata.get("source") or "Brief"
             context_blocks.append(f"{title}\n{doc.page_content}")
         context = "\n\n---\n\n".join(context_blocks)
@@ -1517,7 +1597,70 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion:\n{question}"},
             ]
-        return messages
+        audit_record: dict[str, Any] = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "mode": prompt_kind,
+            "question": question.strip(),
+            "retrieval": {
+                "method": "similarity_search",
+                "requested_chunk_count": _clamp_rag_top_k(settings.rag_top_k),
+                "actual_chunk_count": len(retrieval_chunks),
+                "chunks": retrieval_chunks,
+            },
+        }
+        return messages, audit_record
+
+    def _rag_chunk_from_doc(self, doc: Any, *, rank: int) -> dict[str, Any]:
+        metadata = getattr(doc, "metadata", {}) or {}
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        source_value = metadata_dict.get("source") or metadata_dict.get("title") or metadata_dict.get("page")
+        source = str(source_value).strip() if source_value is not None else ""
+        text = str(getattr(doc, "page_content", None) or "")
+        return {
+            "rank": rank,
+            "source": source,
+            "metadata": self._json_safe_value(metadata_dict),
+            "content": text,
+        }
+
+    def _set_rag_audit_text(self, text: str) -> bool:
+        buffer = self._rag_audit_state.buffer
+        if buffer is None:
+            return False
+        buffer.set_text(text)
+        return False
+
+    def _format_rag_audit_text(self, record: dict[str, Any]) -> str:
+        llm_request = record.get("llm_request")
+        request_dict = llm_request if isinstance(llm_request, dict) else {}
+        body = request_dict.get("body")
+        body_dict = body if isinstance(body, dict) else {}
+        messages = body_dict.get("messages")
+        message_list = messages if isinstance(messages, list) else []
+        rendered_sections = ["LLM Request Sequence"]
+        for index, message in enumerate(message_list, start=1):
+            message_dict = message if isinstance(message, dict) else {}
+            role = str(message_dict.get("role") or "unknown").strip() or "unknown"
+            content = str(message_dict.get("content") or "")
+            rendered_sections.append(f"[{index}] {role}")
+            rendered_sections.append(content)
+        rendered_sections.extend(
+            [
+                "",
+                "Audit Metadata",
+                json.dumps(self._json_safe_value(record), indent=2, ensure_ascii=False),
+            ]
+        )
+        return "\n\n".join(rendered_sections)
+
+    def _json_safe_value(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(key): self._json_safe_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._json_safe_value(item) for item in value]
+        return str(value)
 
     def _kickoff_rag_background_load(self) -> None:
         settings = self._ai_settings
@@ -2443,11 +2586,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
                 )
         css = (
-            "textview.rag-output, textview.search-output {"
+            "textview.rag-output, textview.rag-audit-view, textview.search-output {"
             " }"
             ".app-title { font-weight: 700; }"
             "button.no-bold { font-weight: normal; }"
-            "textview.rag-output { "
+            "textview.rag-output, textview.rag-audit-view { "
             f"color: {DEFAULT_TEXT_COLOR};"
             "background: transparent;"
             "}"
@@ -2496,7 +2639,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
             ".brief-output-frame, .brief-output-frame > viewport { "
             f"background-color: {BRIEF_TEXT_BG_COLOR};"
             "}"
-            f"textview.rag-output {{ font-size: {self._rag_output_font_size}pt; line-height: {DEFAULT_RAG_LINE_HEIGHT}; }}"
+            f"textview.rag-output, textview.rag-audit-view {{ "
+            f"font-size: {self._rag_output_font_size}pt; "
+            f"line-height: {DEFAULT_RAG_LINE_HEIGHT}; "
+            "}"
+            f"textview.rag-audit-view {{ font-size: {DEFAULT_RAG_AUDIT_FONT_SIZE_PT}pt; }}"
             f"textview.search-output {{ font-size: {self._search_output_font_size}pt; }}"
         )
         self._css_provider.load_from_data(css.encode("utf-8"))
