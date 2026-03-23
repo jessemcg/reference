@@ -211,7 +211,27 @@ def split_link_phrase(phrase: str) -> str:
         start += 1
     while end > start and phrase[end - 1] in LINK_TRAILING_PUNCTUATION:
         end -= 1
-    return phrase[start:end].strip()
+    return _strip_outer_markdown_emphasis(phrase[start:end].strip())
+
+
+def _strip_outer_markdown_emphasis(text: str) -> str:
+    cleaned = text.strip()
+    while cleaned:
+        updated = cleaned
+        for marker in ("**", "__", "*", "_"):
+            if (
+                cleaned.startswith(marker)
+                and cleaned.endswith(marker)
+                and len(cleaned) > len(marker) * 2
+            ):
+                candidate = cleaned[len(marker):-len(marker)].strip()
+                if candidate:
+                    updated = candidate
+                    break
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
 
 
 def _normalize_text(text: str) -> str:
@@ -1964,8 +1984,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
     def _activate_ai_link(self, phrase: str) -> None:
         if not self._search_entry:
             return
-        self._search_entry.set_text(phrase)
-        self._run_search(phrase, from_link=True)
+        cleaned = split_link_phrase(phrase)
+        if not cleaned:
+            return
+        self._search_entry.set_text(cleaned)
+        self._run_search(cleaned, from_link=True)
 
     def _run_search(self, query: str, *, from_link: bool) -> None:
         if not query:
@@ -2032,8 +2055,13 @@ class ReferenceWindow(Adw.ApplicationWindow):
 
     def _normalize_search_phrase(self, query: str) -> str:
         phrase = query.strip()
-        if phrase.startswith('"') and phrase.endswith('"') and len(phrase) > 1:
-            phrase = phrase[1:-1].strip()
+        while phrase:
+            updated = _strip_outer_markdown_emphasis(phrase)
+            if updated.startswith('"') and updated.endswith('"') and len(updated) > 1:
+                updated = updated[1:-1].strip()
+            if updated == phrase:
+                break
+            phrase = updated
         return phrase
 
     def _extract_search_terms(self, phrase: str) -> list[str]:
