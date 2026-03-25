@@ -65,6 +65,8 @@ CONFIG_KEY_RAG_STATUTES_ONLY_API_URL = "rag_statutes_only_api_url"
 CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID = "rag_statutes_only_model_id"
 CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY = "rag_statutes_only_api_key"
 CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE = "rag_statutes_only_show_reasoning_trace"
+CONFIG_KEY_MODEL_PROFILES = "model_profiles"
+CONFIG_KEY_COMMAND_DEFAULT_PROFILES = "command_default_profiles"
 CONFIG_KEY_RAG_PROMPT = "rag_prompt"
 CONFIG_KEY_RAG_PROMPT_NO_CITATIONS = "rag_prompt_no_citations"
 CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS = "rag_prompt_full_citations"
@@ -129,18 +131,29 @@ BRIEF_FONT_FAMILY_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 DEFAULT_BRIEF_FONT_FAMILY_NAME = BRIEF_FONT_FAMILY_OPTIONS[0][0]
 RAG_PROMPT_NO_CITATIONS = "no_citations"
-RAG_PROMPT_NO_CITATIONS_WITH_REASONING = "no_citations_with_reasoning"
 RAG_PROMPT_FULL_CITATIONS = "full_citations"
 RAG_PROMPT_STATUTES_ONLY = "statutes_only"
 AI_VIEW_QA = "qa"
 AI_VIEW_RAG_AUDIT = "rag-audit"
 RAG_PROMPT_CHOICES: tuple[tuple[str, str], ...] = (
     ("No Citations", RAG_PROMPT_NO_CITATIONS),
-    ("No Citations with Reasoning", RAG_PROMPT_NO_CITATIONS_WITH_REASONING),
     ("Full Citations", RAG_PROMPT_FULL_CITATIONS),
     ("Statutes/Rules Only", RAG_PROMPT_STATUTES_ONLY),
-    ("RAG Audit", AI_VIEW_RAG_AUDIT),
 )
+UNSET_PROFILE_LABEL = "Choose a profile..."
+MODEL_PROFILE_IDS = ("profile1", "profile2", "profile3", "profile4")
+DEFAULT_MODEL_PROFILE_NICKNAMES = {
+    "profile1": "Profile 1",
+    "profile2": "Profile 2",
+    "profile3": "Profile 3",
+    "profile4": "Profile 4",
+}
+PROFILE_BACKED_PROMPT_TITLES = {
+    RAG_PROMPT_NO_CITATIONS: "No Citations",
+    RAG_PROMPT_FULL_CITATIONS: "Full Citations",
+    RAG_PROMPT_STATUTES_ONLY: "Statutes/Rules Only",
+}
+PROFILE_BACKED_PROMPT_KEYS = tuple(PROFILE_BACKED_PROMPT_TITLES.keys())
 RAG_PROVIDER_VOYAGE = "voyage"
 RAG_PROVIDER_ISAACUS = "isaacus"
 DEFAULT_RAG_PROVIDER = RAG_PROVIDER_VOYAGE
@@ -447,23 +460,32 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
 
 
 @dataclass
+class ModelProfile:
+    key: str
+    nickname: str
+    abbreviation: str
+    api_url: str
+    model_id: str
+    api_key: str
+    disable_reasoning: bool
+
+    def display_name(self) -> str:
+        return self.nickname.strip() or _default_profile_nickname(self.key)
+
+    def is_configured(self) -> bool:
+        return bool(self.api_url.strip() and self.model_id.strip() and self.api_key.strip())
+
+
+@dataclass
+class RagRetryContext:
+    question: str
+    prompt_kind: str
+
+
+@dataclass
 class AiSettings:
-    rag_no_citations_api_url: str
-    rag_no_citations_model_id: str
-    rag_no_citations_api_key: str
-    rag_no_citations_show_reasoning_trace: bool
-    rag_no_citations_with_reasoning_api_url: str
-    rag_no_citations_with_reasoning_model_id: str
-    rag_no_citations_with_reasoning_api_key: str
-    rag_no_citations_with_reasoning_show_reasoning_trace: bool
-    rag_full_citations_api_url: str
-    rag_full_citations_model_id: str
-    rag_full_citations_api_key: str
-    rag_full_citations_show_reasoning_trace: bool
-    rag_statutes_only_api_url: str
-    rag_statutes_only_model_id: str
-    rag_statutes_only_api_key: str
-    rag_statutes_only_show_reasoning_trace: bool
+    model_profiles: list[ModelProfile]
+    rag_prompt_default_profiles: dict[str, str | None]
     rag_prompt_no_citations: str
     rag_prompt_full_citations: str
     rag_prompt_statutes_only: str
@@ -475,55 +497,56 @@ class AiSettings:
     isaacus_model: str
     deep_ask_timeout_seconds: int
 
-    def _llm_ready(self, api_url: str, model_id: str, api_key: str) -> bool:
-        return all(
-            value.strip()
-            for value in (
-                api_url,
-                model_id,
-                api_key,
-                self.rag_prompt_no_citations,
-            )
-        )
+    def profile_by_key(self, profile_key: str | None) -> ModelProfile | None:
+        if profile_key not in MODEL_PROFILE_IDS:
+            return None
+        for profile in self.model_profiles:
+            if profile.key == profile_key:
+                return profile
+        return None
+
+    def profile_by_nickname(self, nickname: str | None) -> ModelProfile | None:
+        requested = str(nickname or "").strip()
+        if not requested:
+            return None
+        for profile in self.model_profiles:
+            if profile.display_name() == requested:
+                return profile
+        lowered = requested.lower()
+        for profile in self.model_profiles:
+            if profile.display_name().lower() == lowered:
+                return profile
+        return None
+
+    def default_profile_key_for_prompt(self, prompt_kind: str) -> str | None:
+        selected = self.rag_prompt_default_profiles.get(prompt_kind)
+        return selected if selected in MODEL_PROFILE_IDS else None
+
+    def default_profile_for_prompt(self, prompt_kind: str) -> ModelProfile | None:
+        return self.profile_by_key(self.default_profile_key_for_prompt(prompt_kind))
 
     def llm_settings_for_prompt(self, prompt_kind: str) -> tuple[str, str, str]:
-        if prompt_kind == RAG_PROMPT_NO_CITATIONS_WITH_REASONING:
-            return (
-                self.rag_no_citations_with_reasoning_api_url,
-                self.rag_no_citations_with_reasoning_api_key,
-                self.rag_no_citations_with_reasoning_model_id,
-            )
-        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
-            return (
-                self.rag_full_citations_api_url,
-                self.rag_full_citations_api_key,
-                self.rag_full_citations_model_id,
-            )
-        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
-            return (
-                self.rag_statutes_only_api_url,
-                self.rag_statutes_only_api_key,
-                self.rag_statutes_only_model_id,
-            )
-        return (
-            self.rag_no_citations_api_url,
-            self.rag_no_citations_api_key,
-            self.rag_no_citations_model_id,
-        )
+        profile = self.default_profile_for_prompt(prompt_kind)
+        if profile is None:
+            return "", "", ""
+        return profile.api_url, profile.api_key, profile.model_id
 
     def disable_reasoning_for_prompt(self, prompt_kind: str) -> bool:
-        if prompt_kind == RAG_PROMPT_NO_CITATIONS_WITH_REASONING:
-            return bool(self.rag_no_citations_with_reasoning_show_reasoning_trace)
-        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
-            return bool(self.rag_full_citations_show_reasoning_trace)
-        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
-            return bool(self.rag_statutes_only_show_reasoning_trace)
-        return bool(self.rag_no_citations_show_reasoning_trace)
+        profile = self.default_profile_for_prompt(prompt_kind)
+        return bool(profile.disable_reasoning) if profile is not None else False
 
     def is_rag_ready_for_prompt(self, prompt_kind: str) -> bool:
-        api_url, api_key, model_id = self.llm_settings_for_prompt(prompt_kind)
-        llm_ready = self._llm_ready(api_url, model_id, api_key)
-        return llm_ready and self.embeddings_ready()
+        profile = self.default_profile_for_prompt(prompt_kind)
+        if profile is None or not profile.is_configured():
+            return False
+        return bool(self.prompt_text_for_kind(prompt_kind).strip()) and self.embeddings_ready()
+
+    def prompt_text_for_kind(self, prompt_kind: str) -> str:
+        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
+            return self.rag_prompt_full_citations or DEFAULT_RAG_PROMPT_FULL_CITATIONS
+        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
+            return self.rag_prompt_statutes_only or DEFAULT_RAG_PROMPT_STATUTES_ONLY
+        return self.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
 
     def voyage_ready(self) -> bool:
         return all(value.strip() for value in (self.voyage_api_key, self.voyage_model))
@@ -546,6 +569,8 @@ class AiSettings:
 
 def load_ai_settings() -> AiSettings:
     config = _read_config()
+    model_profiles = load_model_profiles()
+    rag_prompt_default_profiles = load_rag_prompt_profile_defaults()
     raw_top_k = config.get(CONFIG_KEY_RAG_TOP_K, DEFAULT_RAG_TOP_K)
     try:
         rag_top_k = int(raw_top_k)
@@ -562,68 +587,9 @@ def load_ai_settings() -> AiSettings:
         or DEFAULT_RAG_VOYAGE_MODEL
     ).strip()
     deep_ask_timeout_seconds = 0
-    legacy_rag_api_url = str(config.get(CONFIG_KEY_RAG_API_URL, "") or "").strip()
-    legacy_rag_model_id = str(config.get(CONFIG_KEY_RAG_MODEL_ID, "") or "").strip()
-    legacy_rag_api_key = str(config.get(CONFIG_KEY_RAG_API_KEY, "") or "").strip()
-    legacy_basic_api_url = str(config.get(CONFIG_KEY_RAG_BASIC_API_URL, legacy_rag_api_url) or "").strip()
-    legacy_basic_model_id = str(config.get(CONFIG_KEY_RAG_BASIC_MODEL_ID, legacy_rag_model_id) or "").strip()
-    legacy_basic_api_key = str(config.get(CONFIG_KEY_RAG_BASIC_API_KEY, legacy_rag_api_key) or "").strip()
-    legacy_reasoning_api_url = str(config.get(CONFIG_KEY_RAG_REASONING_API_URL, legacy_rag_api_url) or "").strip()
-    legacy_reasoning_model_id = str(config.get(CONFIG_KEY_RAG_REASONING_MODEL_ID, legacy_rag_model_id) or "").strip()
-    legacy_reasoning_api_key = str(config.get(CONFIG_KEY_RAG_REASONING_API_KEY, legacy_rag_api_key) or "").strip()
     return AiSettings(
-        rag_no_citations_api_url=str(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_URL, legacy_basic_api_url) or ""
-        ).strip(),
-        rag_no_citations_model_id=str(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID, legacy_basic_model_id) or ""
-        ).strip(),
-        rag_no_citations_api_key=str(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_KEY, legacy_basic_api_key) or ""
-        ).strip(),
-        rag_no_citations_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE),
-            False,
-        ),
-        rag_no_citations_with_reasoning_api_url=str(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL, legacy_reasoning_api_url) or ""
-        ).strip(),
-        rag_no_citations_with_reasoning_model_id=str(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID, legacy_reasoning_model_id) or ""
-        ).strip(),
-        rag_no_citations_with_reasoning_api_key=str(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY, legacy_reasoning_api_key) or ""
-        ).strip(),
-        rag_no_citations_with_reasoning_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE),
-            False,
-        ),
-        rag_full_citations_api_url=str(
-            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_URL, legacy_reasoning_api_url) or ""
-        ).strip(),
-        rag_full_citations_model_id=str(
-            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID, legacy_reasoning_model_id) or ""
-        ).strip(),
-        rag_full_citations_api_key=str(
-            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY, legacy_reasoning_api_key) or ""
-        ).strip(),
-        rag_full_citations_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE),
-            False,
-        ),
-        rag_statutes_only_api_url=str(
-            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_URL, legacy_reasoning_api_url) or ""
-        ).strip(),
-        rag_statutes_only_model_id=str(
-            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID, legacy_reasoning_model_id) or ""
-        ).strip(),
-        rag_statutes_only_api_key=str(
-            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY, legacy_reasoning_api_key) or ""
-        ).strip(),
-        rag_statutes_only_show_reasoning_trace=_coerce_bool_config(
-            config.get(CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE),
-            False,
-        ),
+        model_profiles=model_profiles,
+        rag_prompt_default_profiles=rag_prompt_default_profiles,
         rag_prompt_no_citations=str(
             config.get(CONFIG_KEY_RAG_PROMPT_NO_CITATIONS, legacy_prompt) or legacy_prompt
         ).strip(),
@@ -655,41 +621,25 @@ def load_ai_settings() -> AiSettings:
 
 def save_ai_settings(settings: AiSettings) -> None:
     config = _read_config()
-    config[CONFIG_KEY_RAG_NO_CITATIONS_API_URL] = settings.rag_no_citations_api_url
-    config[CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID] = settings.rag_no_citations_model_id
-    config[CONFIG_KEY_RAG_NO_CITATIONS_API_KEY] = settings.rag_no_citations_api_key
-    config[CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE] = bool(
-        settings.rag_no_citations_show_reasoning_trace
-    )
-    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL] = settings.rag_no_citations_with_reasoning_api_url
-    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID] = settings.rag_no_citations_with_reasoning_model_id
-    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY] = settings.rag_no_citations_with_reasoning_api_key
-    config[CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE] = bool(
-        settings.rag_no_citations_with_reasoning_show_reasoning_trace
-    )
-    config[CONFIG_KEY_RAG_FULL_CITATIONS_API_URL] = settings.rag_full_citations_api_url
-    config[CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID] = settings.rag_full_citations_model_id
-    config[CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY] = settings.rag_full_citations_api_key
-    config[CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE] = bool(
-        settings.rag_full_citations_show_reasoning_trace
-    )
-    config[CONFIG_KEY_RAG_STATUTES_ONLY_API_URL] = settings.rag_statutes_only_api_url
-    config[CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID] = settings.rag_statutes_only_model_id
-    config[CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY] = settings.rag_statutes_only_api_key
-    config[CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE] = bool(
-        settings.rag_statutes_only_show_reasoning_trace
-    )
-    # Keep legacy grouped keys in sync for backward compatibility with older app versions.
-    config[CONFIG_KEY_RAG_BASIC_API_URL] = settings.rag_no_citations_api_url
-    config[CONFIG_KEY_RAG_BASIC_MODEL_ID] = settings.rag_no_citations_model_id
-    config[CONFIG_KEY_RAG_BASIC_API_KEY] = settings.rag_no_citations_api_key
-    config[CONFIG_KEY_RAG_REASONING_API_URL] = settings.rag_full_citations_api_url
-    config[CONFIG_KEY_RAG_REASONING_MODEL_ID] = settings.rag_full_citations_model_id
-    config[CONFIG_KEY_RAG_REASONING_API_KEY] = settings.rag_full_citations_api_key
-    # Keep legacy keys in sync for backward compatibility with older app versions.
-    config[CONFIG_KEY_RAG_API_URL] = settings.rag_no_citations_api_url
-    config[CONFIG_KEY_RAG_MODEL_ID] = settings.rag_no_citations_model_id
-    config[CONFIG_KEY_RAG_API_KEY] = settings.rag_no_citations_api_key
+    config[CONFIG_KEY_MODEL_PROFILES] = [
+        {
+            "nickname": profile.display_name(),
+            "abbreviation": profile.abbreviation.strip(),
+            "api_url": profile.api_url,
+            "model_id": profile.model_id,
+            "api_key": profile.api_key,
+            "disable_reasoning": bool(profile.disable_reasoning),
+        }
+        for profile in settings.model_profiles[: len(MODEL_PROFILE_IDS)]
+    ]
+    existing_defaults = config.get(CONFIG_KEY_COMMAND_DEFAULT_PROFILES)
+    merged_defaults = existing_defaults.copy() if isinstance(existing_defaults, dict) else {}
+    for key, value in _sanitize_prompt_profile_defaults(settings.rag_prompt_default_profiles).items():
+        if value in MODEL_PROFILE_IDS:
+            merged_defaults[key] = value
+        else:
+            merged_defaults.pop(key, None)
+    config[CONFIG_KEY_COMMAND_DEFAULT_PROFILES] = merged_defaults
     config[CONFIG_KEY_RAG_PROMPT_NO_CITATIONS] = settings.rag_prompt_no_citations or DEFAULT_RAG_PROMPT
     config[CONFIG_KEY_RAG_PROMPT_FULL_CITATIONS] = (
         settings.rag_prompt_full_citations or DEFAULT_RAG_PROMPT_FULL_CITATIONS
@@ -718,6 +668,31 @@ def save_ai_settings(settings: AiSettings) -> None:
         "rag_full_citations_deepseek_reasoning",
         "rag_statutes_only_kimi_reasoning",
         "rag_statutes_only_deepseek_reasoning",
+        CONFIG_KEY_RAG_NO_CITATIONS_API_URL,
+        CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID,
+        CONFIG_KEY_RAG_NO_CITATIONS_API_KEY,
+        CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE,
+        CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL,
+        CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID,
+        CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY,
+        CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE,
+        CONFIG_KEY_RAG_FULL_CITATIONS_API_URL,
+        CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID,
+        CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY,
+        CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE,
+        CONFIG_KEY_RAG_STATUTES_ONLY_API_URL,
+        CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID,
+        CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY,
+        CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE,
+        CONFIG_KEY_RAG_BASIC_API_URL,
+        CONFIG_KEY_RAG_BASIC_MODEL_ID,
+        CONFIG_KEY_RAG_BASIC_API_KEY,
+        CONFIG_KEY_RAG_REASONING_API_URL,
+        CONFIG_KEY_RAG_REASONING_MODEL_ID,
+        CONFIG_KEY_RAG_REASONING_API_KEY,
+        CONFIG_KEY_RAG_API_URL,
+        CONFIG_KEY_RAG_MODEL_ID,
+        CONFIG_KEY_RAG_API_KEY,
     ):
         config.pop(obsolete_key, None)
     _write_config(config)
@@ -784,6 +759,144 @@ def _coerce_color_value(value: Any, default: str) -> str:
     return default
 
 
+def _default_profile_nickname(profile_key: str) -> str:
+    fallback = DEFAULT_MODEL_PROFILE_NICKNAMES.get(profile_key)
+    if fallback:
+        return fallback
+    match = re.fullmatch(r"profile(\d+)", profile_key or "")
+    if match:
+        return f"Profile {match.group(1)}"
+    return profile_key.title()
+
+
+def _sanitize_model_profile(raw: Any, key: str, fallback_nickname: str) -> ModelProfile:
+    data = raw if isinstance(raw, dict) else {}
+    nickname = str(data.get("nickname", fallback_nickname) or "").strip() or fallback_nickname
+    return ModelProfile(
+        key=key,
+        nickname=nickname,
+        abbreviation=str(data.get("abbreviation", "") or "").strip(),
+        api_url=str(data.get("api_url", "") or "").strip(),
+        model_id=str(data.get("model_id", "") or "").strip(),
+        api_key=str(data.get("api_key", "") or "").strip(),
+        disable_reasoning=_coerce_bool_config(data.get("disable_reasoning"), False),
+    )
+
+
+def load_model_profiles() -> list[ModelProfile]:
+    config = _read_config()
+    raw_profiles = config.get(CONFIG_KEY_MODEL_PROFILES)
+    if isinstance(raw_profiles, list) and raw_profiles:
+        profiles: list[ModelProfile] = []
+        for index, key in enumerate(MODEL_PROFILE_IDS):
+            fallback = DEFAULT_MODEL_PROFILE_NICKNAMES[key]
+            entry = raw_profiles[index] if index < len(raw_profiles) else {}
+            profiles.append(_sanitize_model_profile(entry, key, fallback))
+        return profiles
+
+    legacy_profiles = [
+        ModelProfile(
+            key="profile1",
+            nickname=DEFAULT_MODEL_PROFILE_NICKNAMES["profile1"],
+            abbreviation="",
+            api_url=str(config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_URL, "") or "").strip(),
+            model_id=str(config.get(CONFIG_KEY_RAG_NO_CITATIONS_MODEL_ID, "") or "").strip(),
+            api_key=str(config.get(CONFIG_KEY_RAG_NO_CITATIONS_API_KEY, "") or "").strip(),
+            disable_reasoning=_coerce_bool_config(
+                config.get(CONFIG_KEY_RAG_NO_CITATIONS_SHOW_REASONING_TRACE),
+                False,
+            ),
+        ),
+        ModelProfile(
+            key="profile2",
+            nickname=DEFAULT_MODEL_PROFILE_NICKNAMES["profile2"],
+            abbreviation="",
+            api_url=str(config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_URL, "") or "").strip(),
+            model_id=str(config.get(CONFIG_KEY_RAG_FULL_CITATIONS_MODEL_ID, "") or "").strip(),
+            api_key=str(config.get(CONFIG_KEY_RAG_FULL_CITATIONS_API_KEY, "") or "").strip(),
+            disable_reasoning=_coerce_bool_config(
+                config.get(CONFIG_KEY_RAG_FULL_CITATIONS_SHOW_REASONING_TRACE),
+                False,
+            ),
+        ),
+        ModelProfile(
+            key="profile3",
+            nickname=DEFAULT_MODEL_PROFILE_NICKNAMES["profile3"],
+            abbreviation="",
+            api_url=str(config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_URL, "") or "").strip(),
+            model_id=str(config.get(CONFIG_KEY_RAG_STATUTES_ONLY_MODEL_ID, "") or "").strip(),
+            api_key=str(config.get(CONFIG_KEY_RAG_STATUTES_ONLY_API_KEY, "") or "").strip(),
+            disable_reasoning=_coerce_bool_config(
+                config.get(CONFIG_KEY_RAG_STATUTES_ONLY_SHOW_REASONING_TRACE),
+                False,
+            ),
+        ),
+        ModelProfile(
+            key="profile4",
+            nickname=DEFAULT_MODEL_PROFILE_NICKNAMES["profile4"],
+            abbreviation="",
+            api_url=str(config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_URL, "") or "").strip(),
+            model_id=str(config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_MODEL_ID, "") or "").strip(),
+            api_key=str(config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_API_KEY, "") or "").strip(),
+            disable_reasoning=_coerce_bool_config(
+                config.get(CONFIG_KEY_RAG_NO_CITATIONS_WITH_REASONING_SHOW_REASONING_TRACE),
+                False,
+            ),
+        ),
+    ]
+    return legacy_profiles
+
+
+def save_model_profiles(profiles: list[ModelProfile]) -> None:
+    config = _read_config()
+    config[CONFIG_KEY_MODEL_PROFILES] = [
+        {
+            "nickname": profile.display_name(),
+            "abbreviation": profile.abbreviation.strip(),
+            "api_url": profile.api_url,
+            "model_id": profile.model_id,
+            "api_key": profile.api_key,
+            "disable_reasoning": bool(profile.disable_reasoning),
+        }
+        for profile in profiles[: len(MODEL_PROFILE_IDS)]
+    ]
+    _write_config(config)
+
+
+def _sanitize_prompt_profile_defaults(raw: Any) -> dict[str, str | None]:
+    defaults: dict[str, str | None] = {}
+    source = raw if isinstance(raw, dict) else {}
+    for key in PROFILE_BACKED_PROMPT_KEYS:
+        candidate = str(source.get(key, "") or "").strip()
+        defaults[key] = candidate if candidate in MODEL_PROFILE_IDS else None
+    return defaults
+
+
+def load_rag_prompt_profile_defaults() -> dict[str, str | None]:
+    config = _read_config()
+    defaults = _sanitize_prompt_profile_defaults(config.get(CONFIG_KEY_COMMAND_DEFAULT_PROFILES))
+    if defaults[RAG_PROMPT_NO_CITATIONS] is None:
+        defaults[RAG_PROMPT_NO_CITATIONS] = "profile1"
+    if defaults[RAG_PROMPT_FULL_CITATIONS] is None:
+        defaults[RAG_PROMPT_FULL_CITATIONS] = "profile2"
+    if defaults[RAG_PROMPT_STATUTES_ONLY] is None:
+        defaults[RAG_PROMPT_STATUTES_ONLY] = "profile3"
+    return defaults
+
+
+def save_rag_prompt_profile_defaults(defaults: dict[str, str | None]) -> None:
+    config = _read_config()
+    existing = config.get(CONFIG_KEY_COMMAND_DEFAULT_PROFILES)
+    merged = existing.copy() if isinstance(existing, dict) else {}
+    for key, value in _sanitize_prompt_profile_defaults(defaults).items():
+        if value in MODEL_PROFILE_IDS:
+            merged[key] = value
+        else:
+            merged.pop(key, None)
+    config[CONFIG_KEY_COMMAND_DEFAULT_PROFILES] = merged
+    _write_config(config)
+
+
 def load_ui_settings() -> tuple[int, int, str, str]:
     config = _read_config()
     raw_rag_size = config.get(CONFIG_KEY_RAG_OUTPUT_FONT_SIZE, DEFAULT_OUTPUT_FONT_SIZE)
@@ -842,6 +955,16 @@ class AiOutputView:
 
 
 @dataclass
+class ModelProfileEditorWidgets:
+    nickname_row: Adw.EntryRow
+    abbreviation_row: Adw.EntryRow
+    api_url_row: Adw.EntryRow
+    model_row: Adw.EntryRow
+    api_key_row: Adw.EntryRow
+    disable_reasoning_row: Adw.SwitchRow
+
+
+@dataclass
 class SearchResult:
     path: str
     title: str
@@ -889,6 +1012,10 @@ class ReferenceApp(Adw.Application):
 
         action = Gio.SimpleAction.new("show-shortcuts", None)
         action.connect("activate", self._on_show_shortcuts)
+        self.add_action(action)
+
+        action = Gio.SimpleAction.new("show-rag-audit", None)
+        action.connect("activate", self._on_show_rag_audit)
         self.add_action(action)
 
         self.set_accels_for_action("app.focus-rag", ["<Primary><Shift>a"])
@@ -980,6 +1107,11 @@ class ReferenceApp(Adw.Application):
         window.set_transient_for(self._window)
         window.present()
 
+    def _on_show_rag_audit(self, _action: Gio.SimpleAction, _param: GLib.Variant | None) -> None:
+        if self._window is None:
+            return
+        self._window._set_rag_view(AI_VIEW_RAG_AUDIT)
+
 
 class ReferenceWindow(Adw.ApplicationWindow):
     def __init__(self, app: ReferenceApp) -> None:
@@ -1019,7 +1151,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_prompt_toggle_guard = False
         self._rag_active_view = AI_VIEW_QA
         self._last_rag_prompt_kind = RAG_PROMPT_NO_CITATIONS
+        self._last_rag_retry_context: RagRetryContext | None = None
         self._rag_audit_state = AiOutputView()
+        self._regenerate_label: Gtk.Label | None = None
+        self._regenerate_profile_chip_box: Gtk.Box | None = None
+        self._regenerate_profile_chip_buttons: list[Gtk.Button] = []
         self._search_entry: Gtk.SearchEntry | None = None
         self._search_button: Gtk.Button | None = None
         self._search_prev_button: Gtk.Button | None = None
@@ -1051,6 +1187,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         menu_model = Gio.Menu()
         menu_model.append("Settings", "app.open-settings")
         menu_model.append("Update Index", "app.update-index")
+        menu_model.append("RAG Audit", "app.show-rag-audit")
         menu_model.append("Keyboard Shortcuts", "app.show-shortcuts")
         menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu_button.set_menu_model(menu_model)
@@ -1133,6 +1270,21 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_audit_state = rag_audit_state
         self._rag_view_stack = rag_view_stack
         self._sync_rag_prompt_dropdown()
+
+        regenerate_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        regenerate_row.set_hexpand(True)
+        regenerate_label = Gtk.Label(label="Try again with:", xalign=0)
+        regenerate_label.add_css_class("dim-label")
+        regenerate_row.append(regenerate_label)
+        self._regenerate_label = regenerate_label
+
+        regenerate_profile_chip_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        regenerate_profile_chip_box.set_halign(Gtk.Align.START)
+        regenerate_profile_chip_box.set_visible(False)
+        regenerate_row.append(regenerate_profile_chip_box)
+        self._regenerate_profile_chip_box = regenerate_profile_chip_box
+        outer.append(regenerate_row)
+        self._rebuild_regenerate_profile_chips()
 
         search_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         search_controls.set_hexpand(True)
@@ -1391,22 +1543,85 @@ class ReferenceWindow(Adw.ApplicationWindow):
     def _selected_rag_prompt_kind(self) -> str:
         return self._last_rag_prompt_kind
 
-    def _resolve_rag_prompt(self, prompt_kind: str) -> str:
-        settings = self._ai_settings
-        if prompt_kind == RAG_PROMPT_FULL_CITATIONS:
-            prompt = settings.rag_prompt_full_citations
-            return prompt or DEFAULT_RAG_PROMPT_FULL_CITATIONS
-        if prompt_kind == RAG_PROMPT_STATUTES_ONLY:
-            prompt = settings.rag_prompt_statutes_only
-            return prompt or DEFAULT_RAG_PROMPT_STATUTES_ONLY
-        prompt = settings.rag_prompt_no_citations
-        return prompt or DEFAULT_RAG_PROMPT
+    def _clear_box(self, box: Gtk.Box) -> None:
+        child = box.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            box.remove(child)
+            child = next_child
 
-    def _resolve_rag_llm_settings(self, prompt_kind: str) -> tuple[str, str, str, bool]:
-        return (
-            *self._ai_settings.llm_settings_for_prompt(prompt_kind),
-            self._ai_settings.disable_reasoning_for_prompt(prompt_kind),
+    def _model_profile_by_key(self, profile_key: str) -> ModelProfile | None:
+        return self._ai_settings.profile_by_key(profile_key)
+
+    def _model_profile_by_nickname(self, nickname: str) -> ModelProfile | None:
+        return self._ai_settings.profile_by_nickname(nickname)
+
+    def _profile_slot_label(self, profile: ModelProfile) -> str:
+        abbreviation = profile.abbreviation.strip()
+        if abbreviation:
+            return abbreviation
+        try:
+            return str(MODEL_PROFILE_IDS.index(profile.key) + 1)
+        except ValueError:
+            return profile.display_name()[:1] or "?"
+
+    def _configured_regenerate_profiles(self) -> list[ModelProfile]:
+        return [profile for profile in self._ai_settings.model_profiles if profile.is_configured()]
+
+    def _regenerate_profile_chip_tooltip(self, profile: ModelProfile) -> str:
+        context = self._last_rag_retry_context
+        if context is None:
+            tooltip = "Run a RAG prompt first."
+        else:
+            prompt_title = PROFILE_BACKED_PROMPT_TITLES.get(context.prompt_kind, "RAG")
+            tooltip = f"Run {prompt_title} with {profile.display_name()}."
+            if profile.key == self._ai_settings.default_profile_key_for_prompt(context.prompt_kind):
+                tooltip = f"{tooltip}\nDefault {prompt_title} profile."
+        if profile.model_id.strip():
+            tooltip = f"{tooltip}\nModel: {profile.model_id.strip()}"
+        return tooltip
+
+    def _rebuild_regenerate_profile_chips(self) -> None:
+        box = self._regenerate_profile_chip_box
+        label = self._regenerate_label
+        if box is None:
+            return
+        self._clear_box(box)
+        self._regenerate_profile_chip_buttons = []
+        profiles = self._configured_regenerate_profiles()
+        context = self._last_rag_retry_context
+        box.set_visible(bool(profiles))
+        if label is not None:
+            label.set_label("Try again with:")
+            label.set_visible(bool(profiles))
+        if not profiles:
+            return
+        for profile in profiles:
+            button = Gtk.Button(label=self._profile_slot_label(profile))
+            button.add_css_class("flat")
+            button.add_css_class("improve-profile-chip")
+            button.set_tooltip_text(self._regenerate_profile_chip_tooltip(profile))
+            button.connect("clicked", self._on_regenerate_clicked, profile.display_name())
+            button.set_sensitive(context is not None and self._rag_stream_thread is None)
+            box.append(button)
+            self._regenerate_profile_chip_buttons.append(button)
+
+    def _resolve_rag_prompt(self, prompt_kind: str) -> str:
+        return self._ai_settings.prompt_text_for_kind(prompt_kind)
+
+    def _resolve_rag_llm_settings(
+        self,
+        prompt_kind: str,
+        profile_nickname: str | None = None,
+    ) -> tuple[str, str, str, bool, ModelProfile | None]:
+        profile = (
+            self._model_profile_by_nickname(profile_nickname)
+            if profile_nickname
+            else self._ai_settings.default_profile_for_prompt(prompt_kind)
         )
+        if profile is None:
+            return "", "", "", False, None
+        return profile.api_url, profile.api_key, profile.model_id, bool(profile.disable_reasoning), profile
 
     def _set_rag_view(self, view_name: str) -> None:
         target = view_name if view_name in {AI_VIEW_QA, AI_VIEW_RAG_AUDIT} else AI_VIEW_QA
@@ -1421,11 +1636,8 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_prompt_toggle_guard = True
         try:
             selected = 0
-            current_value = (
-                AI_VIEW_RAG_AUDIT if self._rag_active_view == AI_VIEW_RAG_AUDIT else self._last_rag_prompt_kind
-            )
             for index, (_label, value) in enumerate(RAG_PROMPT_CHOICES):
-                if value == current_value:
+                if value == self._last_rag_prompt_kind:
                     selected = index
                     break
             self._rag_prompt_dropdown.set_selected(selected)
@@ -1439,17 +1651,31 @@ class ReferenceWindow(Adw.ApplicationWindow):
         if selected < 0 or selected >= len(RAG_PROMPT_CHOICES):
             return
         _label, value = RAG_PROMPT_CHOICES[selected]
-        if value == AI_VIEW_RAG_AUDIT:
-            self._set_rag_view(AI_VIEW_RAG_AUDIT)
-            return
         self._last_rag_prompt_kind = value
         self._set_rag_view(AI_VIEW_QA)
 
-    def _ask_rag_question(self, question: str, prompt_kind: str) -> None:
+    def _ask_rag_question(
+        self,
+        question: str,
+        prompt_kind: str,
+        *,
+        profile_nickname: str | None = None,
+    ) -> None:
         if not question:
             return
-        if not self._ai_settings.is_rag_ready_for_prompt(prompt_kind):
-            self._show_toast("Configure RAG and embeddings settings first.")
+        api_url, api_key, model_id, disable_reasoning, profile = self._resolve_rag_llm_settings(
+            prompt_kind,
+            profile_nickname,
+        )
+        if profile_nickname and profile is None:
+            self._show_toast(f'Unknown model profile "{profile_nickname}".')
+            return
+        if profile is None:
+            prompt_title = PROFILE_BACKED_PROMPT_TITLES.get(prompt_kind, "RAG")
+            self._show_toast(f'Choose a default model profile for "{prompt_title}" in Settings.')
+            return
+        if not profile.is_configured() or not self._ai_settings.embeddings_ready():
+            self._show_toast("Configure model profiles and embeddings settings first.")
             return
         if not CHROMA_DIR.exists():
             self._show_toast("No embeddings found. Click Update Index first.")
@@ -1462,10 +1688,11 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._last_rag_answer = ""
         self._apply_ai_output_links("", self._rag_output_state)
         self._set_rag_audit_text("")
+        self._last_rag_retry_context = RagRetryContext(question=question, prompt_kind=prompt_kind)
+        self._rebuild_regenerate_profile_chips()
         cancel_event = threading.Event()
         self._rag_cancel_event = cancel_event
         prompt_text = self._resolve_rag_prompt(prompt_kind)
-        api_url, api_key, model_id, disable_reasoning = self._resolve_rag_llm_settings(prompt_kind)
         thread = threading.Thread(
             target=self._rag_worker,
             args=(
@@ -1483,6 +1710,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
             daemon=True,
         )
         self._rag_stream_thread = thread
+        self._rebuild_regenerate_profile_chips()
         thread.start()
 
     def _rag_worker(
@@ -1549,6 +1777,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
                 pass
         self._rag_stream_thread = None
         self._rag_cancel_event = None
+        self._rebuild_regenerate_profile_chips()
 
     def _append_rag_output(self, text: str, generation: int) -> bool:
         if generation != self._rag_request_generation:
@@ -1568,6 +1797,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_stream_thread = None
         self._rag_cancel_event = None
         self._set_status("", spinning=False)
+        self._rebuild_regenerate_profile_chips()
         return False
 
     def _on_rag_stream_error(self, message: str, generation: int) -> bool:
@@ -1577,6 +1807,7 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_cancel_event = None
         self._set_status("RAG failed.", spinning=False)
         self._show_toast(message or "RAG request failed.")
+        self._rebuild_regenerate_profile_chips()
         return False
 
     def _on_rag_stream_cancelled(self, generation: int) -> bool:
@@ -1585,7 +1816,25 @@ class ReferenceWindow(Adw.ApplicationWindow):
         self._rag_stream_thread = None
         self._rag_cancel_event = None
         self._set_status("", spinning=False)
+        self._rebuild_regenerate_profile_chips()
         return False
+
+    def _on_regenerate_clicked(
+        self,
+        _button: Gtk.Button | None,
+        profile_nickname: str | None = None,
+    ) -> None:
+        if self._rag_stream_thread is not None:
+            return
+        context = self._last_rag_retry_context
+        if context is None:
+            self._show_toast("Run a RAG prompt first.")
+            return
+        self._ask_rag_question(
+            context.question,
+            context.prompt_kind,
+            profile_nickname=profile_nickname,
+        )
 
     def _build_rag_request(
         self,
@@ -2619,6 +2868,14 @@ class ReferenceWindow(Adw.ApplicationWindow):
             " }"
             ".app-title { font-weight: 700; }"
             "button.no-bold { font-weight: normal; }"
+            "button.improve-profile-chip {"
+            "min-height: 24px;"
+            "min-width: 24px;"
+            "padding-left: 6px;"
+            "padding-right: 6px;"
+            "border-radius: 8px;"
+            "font-size: 0.8rem;"
+            "}"
             "textview.rag-output, textview.rag-audit-view { "
             f"color: {DEFAULT_TEXT_COLOR};"
             "background: transparent;"
@@ -2887,10 +3144,8 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         self.set_resizable(True)
         self._app = app
         self._parent = parent
-        self._llm_api_url_rows: dict[str, Adw.EntryRow] = {}
-        self._llm_model_rows: dict[str, Adw.EntryRow] = {}
-        self._llm_api_key_rows: dict[str, Adw.EntryRow] = {}
-        self._llm_reasoning_rows: dict[str, Adw.SwitchRow] = {}
+        self._model_profile_editors: dict[str, ModelProfileEditorWidgets] = {}
+        self._default_profile_dropdowns: dict[str, Gtk.DropDown] = {}
         self._rag_top_k_row: Adw.EntryRow | None = None
         self._embeddings_provider_row: Adw.ComboRow | None = None
         self._embeddings_provider_values: list[str] = [RAG_PROVIDER_VOYAGE, RAG_PROVIDER_ISAACUS]
@@ -2953,14 +3208,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         )
         display_group.add(search_highlight_row)
 
-        self._add_llm_settings_group(box, "No Citations LLM", RAG_PROMPT_NO_CITATIONS)
-        self._add_llm_settings_group(
-            box,
-            "No Citations with Reasoninng LLM",
-            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
-        )
-        self._add_llm_settings_group(box, "Full Citations LLM", RAG_PROMPT_FULL_CITATIONS)
-        self._add_llm_settings_group(box, "Statutes/Rules Only LLM", RAG_PROMPT_STATUTES_ONLY)
+        self._add_model_profiles_group(box)
 
         rag_runtime_group = Adw.PreferencesGroup(title="RAG Runtime")
         rag_runtime_group.add_css_class("list-stack")
@@ -3124,30 +3372,51 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             return _coerce_color_value(control.get_text(), default)
         return default
 
-    def _add_llm_settings_group(self, box: Gtk.Box, title: str, prompt_kind: str) -> None:
-        group = Adw.PreferencesGroup(title=title)
+    def _profile_dropdown_model(self, include_unset: bool = False) -> Gtk.StringList:
+        labels = [profile.display_name() for profile in self._parent._ai_settings.model_profiles]
+        if include_unset:
+            labels = [UNSET_PROFILE_LABEL, *labels]
+        return Gtk.StringList.new(labels)
+
+    def _add_model_profiles_group(self, box: Gtk.Box) -> None:
+        group = Adw.PreferencesGroup(title="Model Profiles")
         group.add_css_class("list-stack")
         group.set_hexpand(True)
         box.append(group)
 
-        api_url = Adw.EntryRow(title="API URL")
-        api_url.set_hexpand(True)
-        group.add(api_url)
-        self._llm_api_url_rows[prompt_kind] = api_url
+        for profile in self._parent._ai_settings.model_profiles:
+            nickname_row = Adw.EntryRow(title=f"{profile.display_name()} Name")
+            nickname_row.set_text(profile.display_name())
+            group.add(nickname_row)
 
-        model = Adw.EntryRow(title="Model ID")
-        model.set_hexpand(True)
-        group.add(model)
-        self._llm_model_rows[prompt_kind] = model
+            abbreviation_row = Adw.EntryRow(title=f"{profile.display_name()} Abbreviation")
+            abbreviation_row.set_text(profile.abbreviation)
+            group.add(abbreviation_row)
 
-        api_key = self._build_password_row("API Key")
-        group.add(api_key)
-        self._llm_api_key_rows[prompt_kind] = api_key
+            api_url_row = Adw.EntryRow(title=f"{profile.display_name()} API URL")
+            api_url_row.set_text(profile.api_url)
+            group.add(api_url_row)
 
-        reasoning_row = Adw.SwitchRow(title="Disable reasoning")
-        reasoning_row.set_active(False)
-        group.add(reasoning_row)
-        self._llm_reasoning_rows[prompt_kind] = reasoning_row
+            model_row = Adw.EntryRow(title=f"{profile.display_name()} Model ID")
+            model_row.set_text(profile.model_id)
+            group.add(model_row)
+
+            api_key_row = self._build_password_row(f"{profile.display_name()} API Key")
+            api_key_row.set_text(profile.api_key)
+            group.add(api_key_row)
+
+            disable_reasoning_row = Adw.SwitchRow(title=f"{profile.display_name()} Disable reasoning")
+            disable_reasoning_row.set_active(bool(profile.disable_reasoning))
+            group.add(disable_reasoning_row)
+
+            self._model_profile_editors[profile.key] = ModelProfileEditorWidgets(
+                nickname_row=nickname_row,
+                abbreviation_row=abbreviation_row,
+                api_url_row=api_url_row,
+                model_row=model_row,
+                api_key_row=api_key_row,
+                disable_reasoning_row=disable_reasoning_row,
+            )
 
     def _add_prompt_section(self, box: Gtk.Box, title: str, text: str, key: str) -> None:
         prompt_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -3156,6 +3425,16 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
         prompt_label = Gtk.Label(label=title, xalign=0)
         prompt_label.add_css_class("dim-label")
         prompt_section.append(prompt_label)
+        profile_dropdown = Gtk.DropDown(model=self._profile_dropdown_model(include_unset=True))
+        selected_profile_key = self._parent._ai_settings.rag_prompt_default_profiles.get(key)
+        selected_index = (
+            MODEL_PROFILE_IDS.index(selected_profile_key) + 1
+            if selected_profile_key in MODEL_PROFILE_IDS
+            else 0
+        )
+        profile_dropdown.set_selected(selected_index)
+        prompt_section.append(profile_dropdown)
+        self._default_profile_dropdowns[key] = profile_dropdown
         prompt_scroller, buffer = self._build_prompt_editor(text)
         prompt_section.append(prompt_scroller)
         box.append(prompt_section)
@@ -3192,23 +3471,24 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
 
     def _load_settings(self) -> None:
         settings = load_ai_settings()
-        for prompt_kind in (
-            RAG_PROMPT_NO_CITATIONS,
-            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
-            RAG_PROMPT_FULL_CITATIONS,
-            RAG_PROMPT_STATUTES_ONLY,
-        ):
-            api_url, api_key, model_id = settings.llm_settings_for_prompt(prompt_kind)
-            if prompt_kind in self._llm_api_url_rows:
-                self._llm_api_url_rows[prompt_kind].set_text(api_url)
-            if prompt_kind in self._llm_model_rows:
-                self._llm_model_rows[prompt_kind].set_text(model_id)
-            if prompt_kind in self._llm_api_key_rows:
-                self._llm_api_key_rows[prompt_kind].set_text(api_key)
-            if prompt_kind in self._llm_reasoning_rows:
-                self._llm_reasoning_rows[prompt_kind].set_active(
-                    settings.disable_reasoning_for_prompt(prompt_kind)
-                )
+        for profile in settings.model_profiles:
+            widgets = self._model_profile_editors.get(profile.key)
+            if widgets is None:
+                continue
+            widgets.nickname_row.set_text(profile.display_name())
+            widgets.abbreviation_row.set_text(profile.abbreviation)
+            widgets.api_url_row.set_text(profile.api_url)
+            widgets.model_row.set_text(profile.model_id)
+            widgets.api_key_row.set_text(profile.api_key)
+            widgets.disable_reasoning_row.set_active(bool(profile.disable_reasoning))
+        for prompt_key, dropdown in self._default_profile_dropdowns.items():
+            selected_profile_key = settings.rag_prompt_default_profiles.get(prompt_key)
+            selected_index = (
+                MODEL_PROFILE_IDS.index(selected_profile_key) + 1
+                if selected_profile_key in MODEL_PROFILE_IDS
+                else 0
+            )
+            dropdown.set_selected(selected_index)
         if self._rag_top_k_row:
             self._rag_top_k_row.set_text(str(settings.rag_top_k))
         if self._embeddings_provider_row:
@@ -3266,50 +3546,38 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             ]
         ):
             return
-        for prompt_kind in (
-            RAG_PROMPT_NO_CITATIONS,
-            RAG_PROMPT_NO_CITATIONS_WITH_REASONING,
-            RAG_PROMPT_FULL_CITATIONS,
-            RAG_PROMPT_STATUTES_ONLY,
-        ):
-            if (
-                prompt_kind not in self._llm_api_url_rows
-                or prompt_kind not in self._llm_model_rows
-                or prompt_kind not in self._llm_api_key_rows
-                or prompt_kind not in self._llm_reasoning_rows
-            ):
-                return
+        model_profiles: list[ModelProfile] = []
+        for profile_key in MODEL_PROFILE_IDS:
+            widgets = self._model_profile_editors.get(profile_key)
+            if widgets is None:
+                continue
+            model_profiles.append(
+                ModelProfile(
+                    key=profile_key,
+                    nickname=widgets.nickname_row.get_text().strip() or DEFAULT_MODEL_PROFILE_NICKNAMES[profile_key],
+                    abbreviation=widgets.abbreviation_row.get_text().strip(),
+                    api_url=widgets.api_url_row.get_text().strip(),
+                    model_id=widgets.model_row.get_text().strip(),
+                    api_key=widgets.api_key_row.get_text().strip(),
+                    disable_reasoning=bool(widgets.disable_reasoning_row.get_active()),
+                )
+            )
+        rag_prompt_default_profiles: dict[str, str | None] = {}
+        for key in PROFILE_BACKED_PROMPT_KEYS:
+            dropdown = self._default_profile_dropdowns.get(key)
+            selected = int(dropdown.get_selected()) if dropdown is not None else 0
+            if selected <= 0:
+                rag_prompt_default_profiles[key] = None
+            else:
+                selected_index = selected - 1
+                rag_prompt_default_profiles[key] = (
+                    MODEL_PROFILE_IDS[selected_index]
+                    if 0 <= selected_index < len(MODEL_PROFILE_IDS)
+                    else None
+                )
         settings = AiSettings(
-            rag_no_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
-            rag_no_citations_model_id=self._llm_model_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
-            rag_no_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_NO_CITATIONS].get_text().strip(),
-            rag_no_citations_show_reasoning_trace=bool(
-                self._llm_reasoning_rows[RAG_PROMPT_NO_CITATIONS].get_active()
-            ),
-            rag_no_citations_with_reasoning_api_url=self._llm_api_url_rows[
-                RAG_PROMPT_NO_CITATIONS_WITH_REASONING
-            ].get_text().strip(),
-            rag_no_citations_with_reasoning_model_id=self._llm_model_rows[
-                RAG_PROMPT_NO_CITATIONS_WITH_REASONING
-            ].get_text().strip(),
-            rag_no_citations_with_reasoning_api_key=self._llm_api_key_rows[
-                RAG_PROMPT_NO_CITATIONS_WITH_REASONING
-            ].get_text().strip(),
-            rag_no_citations_with_reasoning_show_reasoning_trace=bool(
-                self._llm_reasoning_rows[RAG_PROMPT_NO_CITATIONS_WITH_REASONING].get_active()
-            ),
-            rag_full_citations_api_url=self._llm_api_url_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
-            rag_full_citations_model_id=self._llm_model_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
-            rag_full_citations_api_key=self._llm_api_key_rows[RAG_PROMPT_FULL_CITATIONS].get_text().strip(),
-            rag_full_citations_show_reasoning_trace=bool(
-                self._llm_reasoning_rows[RAG_PROMPT_FULL_CITATIONS].get_active()
-            ),
-            rag_statutes_only_api_url=self._llm_api_url_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
-            rag_statutes_only_model_id=self._llm_model_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
-            rag_statutes_only_api_key=self._llm_api_key_rows[RAG_PROMPT_STATUTES_ONLY].get_text().strip(),
-            rag_statutes_only_show_reasoning_trace=bool(
-                self._llm_reasoning_rows[RAG_PROMPT_STATUTES_ONLY].get_active()
-            ),
+            model_profiles=model_profiles,
+            rag_prompt_default_profiles=rag_prompt_default_profiles,
             rag_prompt_no_citations=self._prompt_text(
                 RAG_PROMPT_NO_CITATIONS,
                 DEFAULT_RAG_PROMPT,
@@ -3346,6 +3614,7 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
                 settings.rag_top_k = DEFAULT_RAG_TOP_K
         save_ai_settings(settings)
         self._parent._ai_settings = settings
+        self._parent._rebuild_regenerate_profile_chips()
         self._parent._kickoff_rag_background_load()
         rag_size = DEFAULT_OUTPUT_FONT_SIZE
         search_size = DEFAULT_OUTPUT_FONT_SIZE
