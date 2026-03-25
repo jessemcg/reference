@@ -3378,34 +3378,41 @@ class ReferenceSettingsWindow(Adw.ApplicationWindow):
             labels = [UNSET_PROFILE_LABEL, *labels]
         return Gtk.StringList.new(labels)
 
-    def _add_model_profiles_group(self, box: Gtk.Box) -> None:
-        group = Adw.PreferencesGroup(title="Model Profiles")
-        group.add_css_class("list-stack")
-        group.set_hexpand(True)
-        box.append(group)
+    def _model_profile_group_title(self, profile: ModelProfile) -> str:
+        slot_label = _default_profile_nickname(profile.key)
+        display_name = profile.display_name()
+        if display_name == slot_label:
+            return slot_label
+        return f"{slot_label} - {display_name}"
 
+    def _add_model_profiles_group(self, box: Gtk.Box) -> None:
         for profile in self._parent._ai_settings.model_profiles:
-            nickname_row = Adw.EntryRow(title=f"{profile.display_name()} Name")
+            group = Adw.PreferencesGroup(title=self._model_profile_group_title(profile))
+            group.add_css_class("list-stack")
+            group.set_hexpand(True)
+            box.append(group)
+
+            nickname_row = Adw.EntryRow(title="Name")
             nickname_row.set_text(profile.display_name())
             group.add(nickname_row)
 
-            abbreviation_row = Adw.EntryRow(title=f"{profile.display_name()} Abbreviation")
+            abbreviation_row = Adw.EntryRow(title="Abbreviation")
             abbreviation_row.set_text(profile.abbreviation)
             group.add(abbreviation_row)
 
-            api_url_row = Adw.EntryRow(title=f"{profile.display_name()} API URL")
+            api_url_row = Adw.EntryRow(title="API URL")
             api_url_row.set_text(profile.api_url)
             group.add(api_url_row)
 
-            model_row = Adw.EntryRow(title=f"{profile.display_name()} Model ID")
+            model_row = Adw.EntryRow(title="Model ID")
             model_row.set_text(profile.model_id)
             group.add(model_row)
 
-            api_key_row = self._build_password_row(f"{profile.display_name()} API Key")
+            api_key_row = self._build_password_row("API Key")
             api_key_row.set_text(profile.api_key)
             group.add(api_key_row)
 
-            disable_reasoning_row = Adw.SwitchRow(title=f"{profile.display_name()} Disable reasoning")
+            disable_reasoning_row = Adw.SwitchRow(title="Disable reasoning")
             disable_reasoning_row.set_active(bool(profile.disable_reasoning))
             group.add(disable_reasoning_row)
 
