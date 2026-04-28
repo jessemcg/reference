@@ -191,7 +191,9 @@ def _apply_disable_reasoning_to_body(
 ) -> None:
     if not disable_reasoning:
         return
-    if _model_looks_deepseek(model_id) or _model_looks_kimi(model_id):
+    if _model_looks_deepseek(model_id):
+        body["reasoning_effort"] = "none"
+    elif _model_looks_kimi(model_id):
         body["thinking"] = {"type": "disabled"}
     else:
         body["reasoning_effort"] = "none"
